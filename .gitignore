@@ -1,0 +1,22 @@
+# Frontend
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/.env.local
+frontend/.env.*.local
+frontend/build/
+
+# Backend
+backend/.venv/
+backend/venv/
+backend/__pycache__/
+backend/*.pyc
+backend/*.pyo
+
+# Models & Large files (optional depending on GitHub LFS usage)
+# If using git LFS, you might not ignore them, but best to ignore to prevent push errors on regular git
+# backend/model/*.pt
+
+# OS specific
+.DS_Store
+Thumbs.db
