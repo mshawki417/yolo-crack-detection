@@ -3,13 +3,19 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from ultralytics import YOLO
 
+import uvicorn
 import cv2
 import numpy as np
 import os
-import gc
 import urllib.request
+import gc
+import torch
 
 from pathlib import Path
+
+
+# Reduce PyTorch memory usage
+torch.set_num_threads(1)
 
 
 app = FastAPI(
@@ -65,18 +71,18 @@ if not MODEL_PATH.exists():
             "MODEL_URL environment variable is missing"
         )
 
-    print("Downloading YOLO model...")
+    print("Downloading model...")
 
     urllib.request.urlretrieve(
         MODEL_URL,
         MODEL_PATH
     )
 
-    print("Model downloaded")
+    print("Model downloaded successfully")
 
 
 # ==========================
-# Load YOLO Model
+# Load YOLO
 # ==========================
 
 try:
@@ -84,6 +90,9 @@ try:
     model = YOLO(
         str(MODEL_PATH)
     )
+
+    # Evaluation mode
+    model.model.eval()
 
     print(
         "YOLO model loaded successfully"
@@ -93,7 +102,7 @@ try:
 except Exception as e:
 
     print(
-        f"Model loading failed: {e}"
+        f"Model loading error: {e}"
     )
 
     model = None
@@ -101,12 +110,15 @@ except Exception as e:
 
 
 # ==========================
-# Constants
+# Limits
 # ==========================
 
 MAX_FILE_SIZE = (
     5 * 1024 * 1024
 )
+
+MAX_IMAGE_SIZE = 1280
+
 
 
 # ==========================
@@ -133,9 +145,12 @@ async def predict(
 ):
 
     image = None
+    contents = None
     results = None
 
+
     try:
+
 
         if model is None:
 
@@ -145,20 +160,20 @@ async def predict(
             )
 
 
-        # Read image
+        # Read file
 
         contents = await file.read()
 
-
-        # Limit upload size
 
         if len(contents) > MAX_FILE_SIZE:
 
             raise HTTPException(
                 status_code=400,
-                detail="Image size exceeds 5MB"
+                detail="Image size too large. Max 5MB"
             )
 
+
+        # Decode image
 
         image_array = np.frombuffer(
             contents,
@@ -180,16 +195,44 @@ async def predict(
             )
 
 
+        # Resize large images
+
+        height, width = image.shape[:2]
+
+
+        if max(height, width) > MAX_IMAGE_SIZE:
+
+
+            scale = (
+                MAX_IMAGE_SIZE /
+                max(height, width)
+            )
+
+
+            image = cv2.resize(
+                image,
+                None,
+                fx=scale,
+                fy=scale,
+                interpolation=cv2.INTER_AREA
+            )
+
+
+
         # YOLO inference
-        # stream reduces memory usage
 
         results = model.predict(
+
             source=image,
+
             conf=0.45,
+
             imgsz=640,
+
             device="cpu",
-            verbose=False,
-            stream=True
+
+            verbose=False
+
         )
 
 
@@ -201,6 +244,7 @@ async def predict(
 
             if result.boxes is None:
                 continue
+
 
 
             for box in result.boxes:
@@ -227,14 +271,20 @@ async def predict(
                 ]
 
 
+
                 predictions.append(
 
                     {
                         "box": [
+
                             round(x1, 2),
+
                             round(y1, 2),
+
                             round(x2, 2),
-                            round(y2, 2),
+
+                            round(y2, 2)
+
                         ],
 
                         "confidence": round(
@@ -243,9 +293,11 @@ async def predict(
                         ),
 
                         "class": label
+
                     }
 
                 )
+
 
 
         return {
@@ -271,36 +323,45 @@ async def predict(
     except Exception as e:
 
         raise HTTPException(
+
             status_code=500,
+
             detail=str(e)
+
         )
 
 
     finally:
 
-        # Free memory
+
+        # Release memory
 
         del image
-        del results
         del contents
+        del results
+
 
         gc.collect()
 
 
 
 # ==========================
-# Production Run
+# Run
 # ==========================
 
 if __name__ == "__main__":
 
-    import uvicorn
-
 
     uvicorn.run(
+
         "main:app",
+
         host="0.0.0.0",
+
         port=8000,
+
         reload=False,
+
         workers=1
+
     )
