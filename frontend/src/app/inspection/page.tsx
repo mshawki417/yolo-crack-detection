@@ -92,23 +92,31 @@ export default function InspectionPage() {
     if (!selectedFile) return;
     setUploadStatus("analyzing");
     setErrorMsg("");
-
+  
     try {
       const result: DetectionResult = await detectCracks(selectedFile, {
         confidence: params.confidence,
         iou: params.iou,
       });
-      // Store result in sessionStorage, navigate to results page
+  
+      // تحويل الصورة لـ base64 عشان تبقى صالحة بعد الـ navigation
+      const base64Image = await new Promise<string>((resolve) => {
+        const reader = new FileReader();
+        reader.onloadend = () => resolve(reader.result as string);
+        reader.readAsDataURL(selectedFile);
+      });
+  
       sessionStorage.setItem("detectionResult", JSON.stringify(result));
-      sessionStorage.setItem("detectionImageUrl", base64Image);
+      sessionStorage.setItem("detectionImageUrl", base64Image); // ← base64 بدل blob
       router.push("/results");
     } catch (err) {
-      const msg = err instanceof Error ? err.message : "Analysis failed. Check if the backend server is running.";
+      const msg = err instanceof Error
+        ? err.message
+        : "Analysis failed. Check if the backend server is running.";
       setErrorMsg(msg);
       setUploadStatus("error");
     }
   };
-
   return (
     <>
       {/* Mobile Header */}
