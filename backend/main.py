@@ -15,7 +15,7 @@ app = FastAPI(title="YOLO Crack Detection API")
 # ==========================
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # عدّلها لاحقًا إلى رابط Vercel
+    allow_origins=["https://yolo-crack-detection.vercel.app"],  
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
