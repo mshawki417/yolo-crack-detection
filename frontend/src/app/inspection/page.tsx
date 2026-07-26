@@ -100,7 +100,7 @@ export default function InspectionPage() {
       });
       // Store result in sessionStorage, navigate to results page
       sessionStorage.setItem("detectionResult", JSON.stringify(result));
-      sessionStorage.setItem("detectionImageUrl", previewUrl || "");
+      sessionStorage.setItem("detectionImageUrl", base64Image);
       router.push("/results");
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Analysis failed. Check if the backend server is running.";
