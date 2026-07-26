@@ -157,3 +157,30 @@ if __name__ == "__main__":
         port=8000,
         reload=True,
     )
+
+@app.post("/predict")
+async def predict(file: UploadFile = File(...)):
+
+    print("STEP 1: File received")
+
+    contents = await file.read()
+
+    print("STEP 2: File size:", len(contents))
+
+    image = np.frombuffer(contents, np.uint8)
+
+    image = cv2.imdecode(
+        image,
+        cv2.IMREAD_COLOR
+    )
+
+    print("STEP 3: Image decoded")
+
+    results = model.predict(
+        source=image,
+        imgsz=640,
+        conf=0.45,
+        verbose=False
+    )
+
+    print("STEP 4: YOLO finished")
