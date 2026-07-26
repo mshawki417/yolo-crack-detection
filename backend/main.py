@@ -179,9 +179,15 @@ def root():
 
 @app.post("/predict")
 async def predict(file: UploadFile = File(...)):
-    print("PREDICT ENDPOINT REACHED")
+
+    contents = await file.read()
+
+    image = np.frombuffer(contents, np.uint8)
+
+    image = cv2.imdecode(image, cv2.IMREAD_COLOR)
+
     return {
-        "message": "Endpoint works"
+        "shape": image.shape
     }
 
 
