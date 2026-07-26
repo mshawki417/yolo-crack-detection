@@ -186,10 +186,14 @@ async def predict(file: UploadFile = File(...)):
 
     image = cv2.imdecode(image, cv2.IMREAD_COLOR)
 
+    if image is None:
+        raise HTTPException(status_code=400, detail="Invalid image")
+
     height, width = image.shape[:2]
 
     if max(height, width) > 1280:
         scale = 1280 / max(height, width)
+
         image = cv2.resize(
             image,
             None,
@@ -202,13 +206,16 @@ async def predict(file: UploadFile = File(...)):
 
     with torch.no_grad():
 
-        results = model.predict(
-            source=image,
+        print("Calling model")
+
+        results = model(
+            image,
             imgsz=320,
             conf=0.45,
-            device="cpu",
             verbose=False
         )
+
+        print("Model finished")
 
     print("After predict")
 
