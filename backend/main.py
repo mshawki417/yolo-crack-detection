@@ -186,8 +186,34 @@ async def predict(file: UploadFile = File(...)):
 
     image = cv2.imdecode(image, cv2.IMREAD_COLOR)
 
+    height, width = image.shape[:2]
+
+    if max(height, width) > 1280:
+        scale = 1280 / max(height, width)
+        image = cv2.resize(
+            image,
+            None,
+            fx=scale,
+            fy=scale,
+            interpolation=cv2.INTER_AREA
+        )
+
+    print("Before predict")
+
+    with torch.no_grad():
+
+        results = model.predict(
+            source=image,
+            imgsz=320,
+            conf=0.45,
+            device="cpu",
+            verbose=False
+        )
+
+    print("After predict")
+
     return {
-        "shape": image.shape
+        "results": len(results)
     }
 
 
