@@ -1,10 +1,40 @@
 import { DetectionResult, AnalysisParams } from "@/types";
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+const API_BASE_URL =
+  process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
-/**
- * Send an image to the FastAPI backend for YOLO crack detection.
- */
+// ── Raw shape coming from the FastAPI backend ──
+interface BackendDetection {
+  box: [number, number, number, number]; // [x1, y1, x2, y2]
+  confidence: number;
+  class_id: number;
+  class_name: string;
+}
+
+interface BackendResponse {
+  detections: BackendDetection[];
+  count: number;
+  image_size: { width: number; height: number };
+  memory_mb: number;
+}
+
+// ── Transform backend → frontend shape ──
+function transformResponse(
+  data: BackendResponse,
+  filename: string
+): DetectionResult {
+  return {
+    filename,
+    predictions: data.detections.map((d) => ({
+      box: d.box,
+      confidence: d.confidence,
+      class: d.class_name,
+    })),
+    imageWidth: data.image_size.width,
+    imageHeight: data.image_size.height,
+  };
+}
+
 export async function detectCracks(
   file: File,
   params?: Partial<AnalysisParams>
@@ -12,12 +42,10 @@ export async function detectCracks(
   const formData = new FormData();
   formData.append("file", file);
 
-  if (params?.confidence !== undefined) {
+  if (params?.confidence !== undefined)
     formData.append("confidence", params.confidence.toString());
-  }
-  if (params?.iou !== undefined) {
+  if (params?.iou !== undefined)
     formData.append("iou", params.iou.toString());
-  }
 
   const response = await fetch(`${API_BASE_URL}/predict`, {
     method: "POST",
@@ -29,12 +57,10 @@ export async function detectCracks(
     throw new Error(errorData.detail || `API Error: ${response.statusText}`);
   }
 
-  return response.json();
+  const raw: BackendResponse = await response.json();
+  return transformResponse(raw, file.name);
 }
 
-/**
- * Health check for the backend server.
- */
 export async function checkApiHealth(): Promise<boolean> {
   try {
     const response = await fetch(`${API_BASE_URL}/`, { method: "GET" });
