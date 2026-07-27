@@ -1,11 +1,12 @@
-from fastapi import FastAPI, File, UploadFile, HTTPException, Form
+from fastapi import FastAPI, File, UploadFile, HTTPException, Form, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 import onnxruntime as ort
 import uvicorn
 import cv2
 import numpy as np
 import os
-import urllib.request
+import requests as req
 import gc
 import psutil
 from pathlib import Path
@@ -29,6 +30,20 @@ app.add_middleware(
 )
 
 # =====================================
+# CORS على الـ error responses
+# =====================================
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    origin = request.headers.get("origin", "*")
+    response = JSONResponse(
+        status_code=500,
+        content={"detail": str(exc)}
+    )
+    response.headers["Access-Control-Allow-Origin"]      = origin
+    response.headers["Access-Control-Allow-Credentials"] = "true"
+    return response
+
+# =====================================
 # Model Setup
 # =====================================
 MODEL_DIR  = Path("model")
@@ -41,16 +56,30 @@ MODEL_URL = os.getenv("MODEL_URL")
 if not MODEL_PATH.exists():
     if not MODEL_URL:
         raise RuntimeError("MODEL_URL is missing")
-    print("Downloading ONNX model...")
-    urllib.request.urlretrieve(MODEL_URL, MODEL_PATH)
-    print("Model downloaded")
+    print(f"Downloading model from:\n{MODEL_URL}")
+    try:
+        response = req.get(MODEL_URL, stream=True, timeout=120, allow_redirects=True)
+        if response.status_code != 200:
+            raise RuntimeError(f"Download failed — HTTP {response.status_code}")
+        with open(MODEL_PATH, "wb") as f:
+            for chunk in response.iter_content(chunk_size=8192):
+                f.write(chunk)
+        size_mb = MODEL_PATH.stat().st_size / 1024 / 1024
+        print(f"Model downloaded — {size_mb:.1f} MB")
+        if size_mb < 1:
+            MODEL_PATH.unlink()
+            raise RuntimeError("Downloaded file too small — URL probably wrong")
+    except Exception as e:
+        if MODEL_PATH.exists():
+            MODEL_PATH.unlink()
+        raise RuntimeError(str(e))
 
 # =====================================
 # Load ONNX Session Once
 # =====================================
 session     = None
 input_name  = None
-model_imgsz = 640  # fallback
+model_imgsz = 640
 
 try:
     opts = ort.SessionOptions()
@@ -64,16 +93,24 @@ try:
         providers=["CPUExecutionProvider"],
     )
     input_name  = session.get_inputs()[0].name
-    model_imgsz = session.get_inputs()[0].shape[2]  # e.g. 640
+    model_imgsz = session.get_inputs()[0].shape[2]
     print(f"ONNX model loaded — input: {model_imgsz}x{model_imgsz}")
 
 except Exception as e:
     print("ONNX LOAD ERROR:", e)
 
 # =====================================
-# Class Names  (عدّل حسب موديلك)
+# Class Names
 # =====================================
 CLASS_NAMES = {0: "crack", 1: "no-crack"}
+
+# =====================================
+# Allowed image types
+# =====================================
+ALLOWED_IMAGE_TYPES = {
+    "image/jpeg", "image/jpg", "image/png",
+    "image/webp", "image/tiff",
+}
 
 # =====================================
 # Helpers
@@ -85,18 +122,12 @@ def memory_usage() -> float:
 
 
 def letterbox(img: np.ndarray, target_size: int):
-    """
-    Resize مع الحفاظ على النسبة + padding رمادي (114,114,114).
-    Returns: img_padded, scale, (pad_w, pad_h)
-    """
     orig_h, orig_w = img.shape[:2]
     scale  = target_size / max(orig_h, orig_w)
     new_w  = int(orig_w * scale)
     new_h  = int(orig_h * scale)
 
-    img_resized = cv2.resize(
-        img, (new_w, new_h), interpolation=cv2.INTER_LINEAR
-    )
+    img_resized = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
 
     pad_w = (target_size - new_w) / 2
     pad_h = (target_size - new_h) / 2
@@ -115,49 +146,28 @@ def letterbox(img: np.ndarray, target_size: int):
 
 
 def preprocess(img_bgr: np.ndarray, imgsz: int):
-    """
-    Letterbox → BGR2RGB → normalize → CHW → batch
-    Returns: tensor [1,3,H,W], scale, (pad_w, pad_h)
-    """
     img_padded, scale, (pad_w, pad_h) = letterbox(img_bgr, imgsz)
-
     img = cv2.cvtColor(img_padded, cv2.COLOR_BGR2RGB)
     img = img.astype(np.float32) / 255.0
-    img = np.transpose(img, (2, 0, 1))   # HWC → CHW
-    img = np.expand_dims(img, 0)          # → [1, 3, H, W]
-
+    img = np.transpose(img, (2, 0, 1))
+    img = np.expand_dims(img, 0)
     return img, scale, (pad_w, pad_h)
 
 
-def postprocess(
-    outputs,
-    orig_h: int,
-    orig_w: int,
-    conf_thresh: float,
-    iou_thresh: float,
-    scale: float,
-    pad_w: float,
-    pad_h: float,
-):
-    """
-    YOLOv8/v11 ONNX output: [1, 4+num_classes, num_anchors]
-    - عكس الـ letterbox للحصول على إحداثيات الصورة الأصلية
-    - NMS
-    """
-    preds = outputs[0][0].T  # [num_anchors, 4+num_classes]
+def postprocess(outputs, orig_h, orig_w, conf_thresh, iou_thresh, scale, pad_w, pad_h):
+    preds = outputs[0][0].T
 
     boxes_xywh, scores_list, class_ids_list = [], [], []
 
     for pred in preds:
         cx, cy, w, h = pred[:4]
-        class_scores  = pred[4:]
-        class_id      = int(np.argmax(class_scores))
-        confidence    = float(class_scores[class_id])
+        class_scores = pred[4:]
+        class_id     = int(np.argmax(class_scores))
+        confidence   = float(class_scores[class_id])
 
         if confidence < conf_thresh:
             continue
 
-        # ── عكس الـ letterbox ──
         cx_orig = (cx - pad_w) / scale
         cy_orig = (cy - pad_h) / scale
         w_orig  = w / scale
@@ -168,7 +178,6 @@ def postprocess(
         x2 = int(cx_orig + w_orig / 2)
         y2 = int(cy_orig + h_orig / 2)
 
-        # clamp داخل حدود الصورة
         x1 = max(0, min(orig_w, x1))
         y1 = max(0, min(orig_h, y1))
         x2 = max(0, min(orig_w, x2))
@@ -181,13 +190,10 @@ def postprocess(
         scores_list.append(confidence)
         class_ids_list.append(class_id)
 
-    # ── NMS ──
     final_boxes, final_scores, final_class_ids = [], [], []
 
     if boxes_xywh:
-        indices = cv2.dnn.NMSBoxes(
-            boxes_xywh, scores_list, conf_thresh, iou_thresh
-        )
+        indices = cv2.dnn.NMSBoxes(boxes_xywh, scores_list, conf_thresh, iou_thresh)
         if len(indices) > 0:
             for i in indices.flatten():
                 x, y, bw, bh = boxes_xywh[i]
@@ -231,6 +237,13 @@ async def predict(
     if session is None:
         raise HTTPException(status_code=503, detail="Model not loaded")
 
+    # ── تحقق من نوع الملف ──
+    if file.content_type not in ALLOWED_IMAGE_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported file type: {file.content_type}. Images only (JPEG, PNG, WEBP, TIFF)."
+        )
+
     # ── Read ──
     contents = await file.read()
     if len(contents) > 10 * 1024 * 1024:
@@ -243,15 +256,18 @@ async def predict(
 
     orig_h, orig_w = image.shape[:2]
 
-    # ── Resize إذا الصورة كبيرة جداً ──
+    # ── scale_factor لو الصورة اتعملها resize ──
+    scale_factor = 1.0
     if max(orig_h, orig_w) > 1280:
-        s     = 1280 / max(orig_h, orig_w)
+        scale_factor = 1280 / max(orig_h, orig_w)
         image = cv2.resize(
-            image, None, fx=s, fy=s, interpolation=cv2.INTER_AREA
+            image, None, fx=scale_factor, fy=scale_factor,
+            interpolation=cv2.INTER_AREA
         )
         orig_h, orig_w = image.shape[:2]
 
     # ── Inference ──
+    tensor = None
     try:
         tensor, scale, (pad_w, pad_h) = preprocess(image, model_imgsz)
         outputs = session.run(None, {input_name: tensor})
@@ -263,13 +279,15 @@ async def predict(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Inference error: {e}")
     finally:
-        del image, nparr, contents, tensor
+        del image, nparr, contents
+        if tensor is not None:
+            del tensor
         gc.collect()
 
     # ── Response ──
     detections = [
         {
-            "box":        box,          # [x1, y1, x2, y2]
+            "box":        box,
             "confidence": score,
             "class_id":   cid,
             "class_name": CLASS_NAMES.get(cid, "unknown"),
@@ -278,10 +296,11 @@ async def predict(
     ]
 
     return {
-        "detections": detections,
-        "count":      len(detections),
-        "image_size": {"width": orig_w, "height": orig_h},
-        "memory_mb":  memory_usage(),
+        "detections":   detections,
+        "count":        len(detections),
+        "image_size":   {"width": orig_w, "height": orig_h},
+        "scale_factor": scale_factor,   # ← للـ frontend لعكس الـ resize
+        "memory_mb":    memory_usage(),
     }
 
 # =====================================
