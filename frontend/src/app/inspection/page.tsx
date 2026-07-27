@@ -93,6 +93,13 @@ export default function InspectionPage() {
 
   const handleStartAnalysis = async () => {
     if (!selectedFile) return;
+  
+    // ← أضف هذا أولاً
+    if (inputMode === "video") {
+      setErrorMsg("Video analysis is coming soon. Please upload an image (JPG, PNG, WEBP).");
+      setUploadStatus("error");
+      return;
+    }
     setUploadStatus("analyzing");
     setErrorMsg("");
   
