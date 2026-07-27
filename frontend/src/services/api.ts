@@ -77,3 +77,29 @@ export async function warmupBackend(): Promise<void> {
     // ignore
   }
 }
+interface BackendResponse {
+  detections: BackendDetection[];
+  count: number;
+  image_size: { width: number; height: number };
+  scale_factor: number;   // ← أضف
+  memory_mb: number;
+}
+
+function transformResponse(data: BackendResponse, filename: string): DetectionResult {
+  const s = data.scale_factor ?? 1.0;  // ← اعكس الـ scale
+  return {
+    filename,
+    predictions: data.detections.map((d) => ({
+      box: [
+        d.box[0] / s,   // x1
+        d.box[1] / s,   // y1
+        d.box[2] / s,   // x2
+        d.box[3] / s,   // y2
+      ] as [number, number, number, number],
+      confidence: d.confidence,
+      class: d.class_name,
+    })),
+    imageWidth:  Math.round(data.image_size.width  / s),
+    imageHeight: Math.round(data.image_size.height / s),
+  };
+}
