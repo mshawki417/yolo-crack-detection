@@ -2,7 +2,7 @@
 
 import { useState, useRef, useCallback, useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { detectCracks } from "@/services/api";
+import { detectCracks, warmupBackend } from "@/services/api";
 import { AnalysisParams, DetectionResult } from "@/types";
 
 type InputMode = "image" | "video";
@@ -26,6 +26,9 @@ export default function InspectionPage() {
   });
 
   // Clean up object URL on unmount
+  useEffect(() => {
+    warmupBackend();
+  }, []);
   useEffect(() => {
     return () => {
       if (previewUrl) URL.revokeObjectURL(previewUrl);
