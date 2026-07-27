@@ -69,3 +69,11 @@ export async function checkApiHealth(): Promise<boolean> {
     return false;
   }
 }
+
+export async function warmupBackend(): Promise<void> {
+  try {
+    await fetch(`${API_BASE_URL}/`, { method: "GET" });
+  } catch {
+    // ignore
+  }
+}
