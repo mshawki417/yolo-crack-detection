@@ -14,7 +14,7 @@ from pathlib import Path
 # =====================================
 # App
 # =====================================
-app = FastAPI(title="YOLO Crack Detection API", version="2.0")
+app = FastAPI(title="YOLO Crack Detection API", version="3.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -79,7 +79,7 @@ if not MODEL_PATH.exists():
 # =====================================
 session     = None
 input_name  = None
-model_imgsz = 640
+model_imgsz = 256  # SDNET2018 patch size
 
 try:
     opts = ort.SessionOptions()
@@ -93,24 +93,24 @@ try:
         providers=["CPUExecutionProvider"],
     )
     input_name  = session.get_inputs()[0].name
-    model_imgsz = session.get_inputs()[0].shape[2]
+    model_imgsz = session.get_inputs()[0].shape[2]  # تلقائي من الموديل
     print(f"ONNX model loaded — input: {model_imgsz}x{model_imgsz}")
 
 except Exception as e:
     print("ONNX LOAD ERROR:", e)
 
 # =====================================
-# Class Names
+# Config
 # =====================================
 CLASS_NAMES = {0: "crack", 1: "no-crack"}
 
-# =====================================
-# Allowed image types
-# =====================================
 ALLOWED_IMAGE_TYPES = {
     "image/jpeg", "image/jpg", "image/png",
     "image/webp", "image/tiff",
 }
+
+PATCH_SIZE = model_imgsz  # نفس حجم input الموديل
+OVERLAP    = PATCH_SIZE // 4  # 25% overlap
 
 # =====================================
 # Helpers
@@ -121,41 +121,42 @@ def memory_usage() -> float:
     )
 
 
-def letterbox(img: np.ndarray, target_size: int):
-    orig_h, orig_w = img.shape[:2]
-    scale  = target_size / max(orig_h, orig_w)
-    new_w  = int(orig_w * scale)
-    new_h  = int(orig_h * scale)
+def preprocess_patch(patch_bgr: np.ndarray, imgsz: int):
+    """
+    Patch صغير → letterbox → normalize → tensor
+    """
+    orig_h, orig_w = patch_bgr.shape[:2]
+    scale = imgsz / max(orig_h, orig_w)
+    new_w = int(orig_w * scale)
+    new_h = int(orig_h * scale)
 
-    img_resized = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+    resized = cv2.resize(patch_bgr, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
 
-    pad_w = (target_size - new_w) / 2
-    pad_h = (target_size - new_h) / 2
-
+    pad_w = (imgsz - new_w) / 2
+    pad_h = (imgsz - new_h) / 2
     top    = int(round(pad_h - 0.1))
     bottom = int(round(pad_h + 0.1))
     left   = int(round(pad_w - 0.1))
     right  = int(round(pad_w + 0.1))
 
-    img_padded = cv2.copyMakeBorder(
-        img_resized, top, bottom, left, right,
-        cv2.BORDER_CONSTANT, value=(114, 114, 114),
+    padded = cv2.copyMakeBorder(
+        resized, top, bottom, left, right,
+        cv2.BORDER_CONSTANT, value=(114, 114, 114)
     )
 
-    return img_padded, scale, (pad_w, pad_h)
-
-
-def preprocess(img_bgr: np.ndarray, imgsz: int):
-    img_padded, scale, (pad_w, pad_h) = letterbox(img_bgr, imgsz)
-    img = cv2.cvtColor(img_padded, cv2.COLOR_BGR2RGB)
+    img = cv2.cvtColor(padded, cv2.COLOR_BGR2RGB)
     img = img.astype(np.float32) / 255.0
     img = np.transpose(img, (2, 0, 1))
     img = np.expand_dims(img, 0)
+
     return img, scale, (pad_w, pad_h)
 
 
-def postprocess(outputs, orig_h, orig_w, conf_thresh, iou_thresh, scale, pad_w, pad_h):
-    preds = outputs[0][0].T
+def postprocess_patch(outputs, patch_h, patch_w, conf_thresh, iou_thresh, scale, pad_w, pad_h):
+    """
+    YOLO output → boxes في إحداثيات الـ patch
+    """
+    preds = outputs[0][0].T  # [num_anchors, 4+num_classes]
 
     boxes_xywh, scores_list, class_ids_list = [], [], []
 
@@ -168,6 +169,7 @@ def postprocess(outputs, orig_h, orig_w, conf_thresh, iou_thresh, scale, pad_w, 
         if confidence < conf_thresh:
             continue
 
+        # عكس الـ letterbox
         cx_orig = (cx - pad_w) / scale
         cy_orig = (cy - pad_h) / scale
         w_orig  = w / scale
@@ -178,10 +180,10 @@ def postprocess(outputs, orig_h, orig_w, conf_thresh, iou_thresh, scale, pad_w, 
         x2 = int(cx_orig + w_orig / 2)
         y2 = int(cy_orig + h_orig / 2)
 
-        x1 = max(0, min(orig_w, x1))
-        y1 = max(0, min(orig_h, y1))
-        x2 = max(0, min(orig_w, x2))
-        y2 = max(0, min(orig_h, y2))
+        x1 = max(0, min(patch_w, x1))
+        y1 = max(0, min(patch_h, y1))
+        x2 = max(0, min(patch_w, x2))
+        y2 = max(0, min(patch_h, y2))
 
         if x2 <= x1 or y2 <= y1:
             continue
@@ -190,8 +192,8 @@ def postprocess(outputs, orig_h, orig_w, conf_thresh, iou_thresh, scale, pad_w, 
         scores_list.append(confidence)
         class_ids_list.append(class_id)
 
+    # NMS على الـ patch
     final_boxes, final_scores, final_class_ids = [], [], []
-
     if boxes_xywh:
         indices = cv2.dnn.NMSBoxes(boxes_xywh, scores_list, conf_thresh, iou_thresh)
         if len(indices) > 0:
@@ -203,6 +205,89 @@ def postprocess(outputs, orig_h, orig_w, conf_thresh, iou_thresh, scale, pad_w, 
 
     return final_boxes, final_scores, final_class_ids
 
+
+def run_tiled_inference(image, conf_thresh, iou_thresh):
+    """
+    Sliding Window Tiling:
+    - تقطيع الصورة لـ patches بحجم PATCH_SIZE مع OVERLAP
+    - inference على كل patch
+    - تحويل الإحداثيات للصورة الأصلية
+    - NMS شاملة لإزالة التكرار
+    """
+    orig_h, orig_w = image.shape[:2]
+    stride = PATCH_SIZE - OVERLAP
+
+    all_boxes, all_scores, all_class_ids = [], [], []
+
+    for y in range(0, orig_h, stride):
+        for x in range(0, orig_w, stride):
+            # حدود الـ patch
+            x2_patch = min(x + PATCH_SIZE, orig_w)
+            y2_patch = min(y + PATCH_SIZE, orig_h)
+            x1_patch = max(0, x2_patch - PATCH_SIZE)
+            y1_patch = max(0, y2_patch - PATCH_SIZE)
+
+            patch = image[y1_patch:y2_patch, x1_patch:x2_patch]
+            ph, pw = patch.shape[:2]
+
+            # padding لو الـ patch أصغر
+            if ph < PATCH_SIZE or pw < PATCH_SIZE:
+                padded_patch = np.full(
+                    (PATCH_SIZE, PATCH_SIZE, 3), 114, dtype=np.uint8
+                )
+                padded_patch[:ph, :pw] = patch
+                patch = padded_patch
+                ph, pw = PATCH_SIZE, PATCH_SIZE
+
+            # preprocess وinference
+            tensor, scale, (pad_w, pad_h) = preprocess_patch(patch, PATCH_SIZE)
+            outputs = session.run(None, {input_name: tensor})
+            boxes, scores, class_ids = postprocess_patch(
+                outputs, ph, pw,
+                conf_thresh, iou_thresh,
+                scale, pad_w, pad_h
+            )
+
+            # تحويل إحداثيات الـ patch للصورة الأصلية
+            for box in boxes:
+                bx1 = box[0] + x1_patch
+                by1 = box[1] + y1_patch
+                bx2 = box[2] + x1_patch
+                by2 = box[3] + y1_patch
+
+                bx1 = max(0, min(orig_w, bx1))
+                by1 = max(0, min(orig_h, by1))
+                bx2 = max(0, min(orig_w, bx2))
+                by2 = max(0, min(orig_h, by2))
+
+                if bx2 > bx1 and by2 > by1:
+                    all_boxes.append([bx1, by1, bx2, by2])
+
+            all_scores.extend(scores)
+            all_class_ids.extend(class_ids)
+
+            # تنظيف الذاكرة بعد كل patch
+            del tensor, outputs, patch
+            gc.collect()
+
+    # NMS شاملة على كل الصورة لإزالة التكرار بين الـ patches
+    final_boxes, final_scores, final_class_ids = [], [], []
+    if all_boxes:
+        boxes_xywh = [
+            [b[0], b[1], b[2] - b[0], b[3] - b[1]]
+            for b in all_boxes
+        ]
+        indices = cv2.dnn.NMSBoxes(
+            boxes_xywh, all_scores, conf_thresh, iou_thresh
+        )
+        if len(indices) > 0:
+            for i in indices.flatten():
+                final_boxes.append(all_boxes[i])
+                final_scores.append(round(all_scores[i], 4))
+                final_class_ids.append(all_class_ids[i])
+
+    return final_boxes, final_scores, final_class_ids
+
 # =====================================
 # Routes
 # =====================================
@@ -211,6 +296,8 @@ def root():
     return {
         "status":       "running",
         "model_loaded": session is not None,
+        "patch_size":   PATCH_SIZE,
+        "overlap":      OVERLAP,
         "memory_mb":    memory_usage(),
     }
 
@@ -225,6 +312,8 @@ def debug():
         "cpu_percent":      psutil.cpu_percent(interval=0.5),
         "model_loaded":     session is not None,
         "model_input_size": model_imgsz,
+        "patch_size":       PATCH_SIZE,
+        "overlap":          OVERLAP,
     }
 
 
@@ -246,48 +335,44 @@ async def predict(
 
     # ── Read ──
     contents = await file.read()
-    if len(contents) > 10 * 1024 * 1024:
-        raise HTTPException(status_code=413, detail="File too large (max 10 MB)")
+    if len(contents) > 20 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="File too large (max 20 MB)")
 
     nparr = np.frombuffer(contents, np.uint8)
     image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
     if image is None:
         raise HTTPException(status_code=400, detail="Invalid image")
 
-    orig_h, orig_w = image.shape[:2]
+    original_h, original_w = image.shape[:2]
 
-    # ── scale_factor لو الصورة اتعملها resize ──
-    scale_factor = 1.0
-    if max(orig_h, orig_w) > 1280:
-        scale_factor = 1280 / max(orig_h, orig_w)
-        image = cv2.resize(
-            image, None, fx=scale_factor, fy=scale_factor,
-            interpolation=cv2.INTER_AREA
-        )
-        orig_h, orig_w = image.shape[:2]
-
-    # ── Inference ──
-    tensor = None
+    # ── اختار Strategy حسب حجم الصورة ──
+    # صورة صغيرة (أقل من PATCH_SIZE): inference مباشر بدون tiling
+    # صورة كبيرة: tiling
     try:
-        tensor, scale, (pad_w, pad_h) = preprocess(image, model_imgsz)
-        outputs = session.run(None, {input_name: tensor})
-        boxes, scores, class_ids = postprocess(
-            outputs, orig_h, orig_w,
-            confidence, iou,
-            scale, pad_w, pad_h,
-        )
+        if max(original_h, original_w) <= PATCH_SIZE:
+            # inference مباشر
+            tensor, scale, (pad_w, pad_h) = preprocess_patch(image, PATCH_SIZE)
+            outputs = session.run(None, {input_name: tensor})
+            boxes, scores, class_ids = postprocess_patch(
+                outputs, original_h, original_w,
+                confidence, iou, scale, pad_w, pad_h
+            )
+            del tensor, outputs
+        else:
+            # Sliding Window Tiling
+            boxes, scores, class_ids = run_tiled_inference(
+                image, confidence, iou
+            )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Inference error: {e}")
     finally:
         del image, nparr, contents
-        if tensor is not None:
-            del tensor
         gc.collect()
 
     # ── Response ──
     detections = [
         {
-            "box":        box,
+            "box":        box,           # [x1, y1, x2, y2] بإحداثيات الصورة الأصلية
             "confidence": score,
             "class_id":   cid,
             "class_name": CLASS_NAMES.get(cid, "unknown"),
@@ -296,11 +381,11 @@ async def predict(
     ]
 
     return {
-        "detections":   detections,
-        "count":        len(detections),
-        "image_size":   {"width": orig_w, "height": orig_h},
-        "scale_factor": scale_factor,   # ← للـ frontend لعكس الـ resize
-        "memory_mb":    memory_usage(),
+        "detections":  detections,
+        "count":       len(detections),
+        "image_size":  {"width": original_w, "height": original_h},
+        "scale_factor": 1.0,   # الإحداثيات دايماً على الصورة الأصلية
+        "memory_mb":   memory_usage(),
     }
 
 # =====================================
