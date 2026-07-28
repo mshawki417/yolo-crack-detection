@@ -7,3 +7,4 @@ psutil
 python-multipart
 requests
 pymongo[srv]
+certifi
