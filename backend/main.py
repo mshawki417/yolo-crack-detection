@@ -15,6 +15,7 @@ from pathlib import Path
 from datetime import datetime, timezone
 from pymongo import MongoClient
 from pymongo.errors import PyMongoError
+import certifi
 
 # =====================================
 # Logging
@@ -67,6 +68,8 @@ if MONGO_URL:
     try:
         db_client = MongoClient(
             MONGO_URL,
+            tls=True,
+            tlsCAFile=certifi.where(),
             serverSelectionTimeoutMS=5000,
             connectTimeoutMS=5000,
             socketTimeoutMS=10000,
@@ -163,7 +166,7 @@ MAGIC_BYTES: dict[bytes, str] = {
 }
 
 PATCH_SIZE    = model_imgsz    # ثابت — الموديل اتدرب على 256×256
-OVERLAP       = 0     # 25% overlap
+OVERLAP       = 0     #  overlap
 MAX_INPUT_DIM = 640   # resize الصورة الكبيرة قبل الـ tiling
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
 
@@ -298,13 +301,13 @@ def run_tiled_inference(image, conf_thresh, iou_thresh):
                 patch  = padded_patch
                 ph, pw = PATCH_SIZE, PATCH_SIZE
 
-            tensor, scale, (pad_w, pad_h) = preprocess_patch(patch, PATCH_SIZE)
+            tensor, scale, (pad_w, pad_h) = preprocess_patch(image, PATCH_SIZE)
             outputs = session.run(None, {input_name: tensor})
             boxes, scores, class_ids = postprocess_patch(
-                outputs, ph, pw,
-                conf_thresh, iou_thresh,
-                scale, pad_w, pad_h
+                outputs, image.shape[0], image.shape[1],
+                confidence, iou, scale, pad_w, pad_h
             )
+            del tensor, outputs
 
             for box in boxes:
                 bx1 = max(0, min(orig_w, box[0] + x1_patch))
