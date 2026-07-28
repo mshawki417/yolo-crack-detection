@@ -37,8 +37,8 @@ function transformResponse(
       confidence: d.confidence,
       class: d.class_name,
     })),
-    imageWidth:  Math.round(data.image_size.width  / s),
-    imageHeight: Math.round(data.image_size.height / s),
+    imageWidth: data.image_size.width,
+    imageHeight: data.image_size.height,
   };
 }
 
