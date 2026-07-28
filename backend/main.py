@@ -162,9 +162,9 @@ MAGIC_BYTES: dict[bytes, str] = {
     b'MM\x00*':      "tiff",
 }
 
-PATCH_SIZE    = 256    # ثابت — الموديل اتدرب على 256×256
-OVERLAP       = 64     # 25% overlap
-MAX_INPUT_DIM = 1024   # resize الصورة الكبيرة قبل الـ tiling
+PATCH_SIZE    = model_imgsz    # ثابت — الموديل اتدرب على 256×256
+OVERLAP       = 0     # 25% overlap
+MAX_INPUT_DIM = 640   # resize الصورة الكبيرة قبل الـ tiling
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
 
 # =====================================
