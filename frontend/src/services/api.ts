@@ -15,8 +15,8 @@ interface BackendResponse {
   detections: BackendDetection[];
   count: number;
   image_size: { width: number; height: number };
-  display_scale: number;   // ← تغير من scale_factor
-  session_id: string | null;
+  display_scale?: number;
+  scale_factor?: number;    // ← backward compat
   memory_mb: number;
 }
 
@@ -28,7 +28,8 @@ function transformResponse(
   data: BackendResponse,
   filename: string
 ): DetectionResult {
-  const factor = 1 / (data.display_scale ?? 1.0);
+  const rawScale = data.display_scale ?? data.scale_factor ?? 1.0;
+  const factor = 1 / rawScale;
   return {
     filename,
     predictions: data.detections.map((d) => ({
@@ -44,22 +45,7 @@ function transformResponse(
     // dimensions الصورة الـ original (قبل أي resize في الـ backend)
     imageWidth:  Math.round(data.image_size.width  * factor),
     imageHeight: Math.round(data.image_size.height * factor),
-    sessionId: data.session_id ?? undefined,
   };
-}
-
-// ── Start new inspection — يحذف الداتا القديمة من MongoDB ويرجع session_id ──
-export async function startNewInspection(): Promise<string | null> {
-  try {
-    const response = await fetch(`${API_BASE_URL}/inspection/new`, {
-      method: "POST",
-    });
-    if (!response.ok) return null;
-    const data = await response.json();
-    return data.session_id ?? null;
-  } catch {
-    return null;
-  }
 }
 
 // ── Detect cracks with retry ──

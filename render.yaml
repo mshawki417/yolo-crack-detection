@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: yolo-crack-detection-api
+    runtime: python
+    region: oregon
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT --workers 1
+    envVars:
+      - key: MODEL_URL
+        sync: false
+      - key: MONGO_URL
+        sync: false
+      - key: PYTHON_VERSION
+        value: "3.11.9"
+      - key: MALLOC_ARENA_MAX
+        value: "2"
+      - key: PYTHONDONTWRITEBYTECODE
+        value: "1"

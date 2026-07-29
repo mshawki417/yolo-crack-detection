@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 # =====================================
 # App
 # =====================================
-app = FastAPI(title="YOLO Crack Detection API", version="4.0")
+app = FastAPI(title="YOLO Crack Detection API", version="4.1")
 
 app.add_middleware(
     CORSMiddleware,
@@ -116,7 +116,7 @@ if not MODEL_PATH.exists():
         raise RuntimeError(str(e))
 
 # =====================================
-# Load ONNX Session Once
+# Load ONNX Session Once — Memory-optimized for Render 512 MB
 # =====================================
 session     = None
 input_name  = None
@@ -128,6 +128,11 @@ try:
     opts.intra_op_num_threads = 1
     opts.inter_op_num_threads = 1
 
+    # ── Memory optimizations for Render free-tier (512 MB RAM) ──
+    opts.enable_mem_pattern = True
+    opts.enable_mem_reuse   = True
+    opts.enable_cpu_mem_arena = False   # تقليل الـ RAM: بدل ما يحجز arena كبير
+
     session = ort.InferenceSession(
         str(MODEL_PATH),
         sess_options=opts,
@@ -136,6 +141,10 @@ try:
     input_name  = session.get_inputs()[0].name
     model_imgsz = session.get_inputs()[0].shape[2]
     logger.info(f"ONNX model loaded — input: {model_imgsz}x{model_imgsz}")
+
+    # ── تنظيف بعد التحميل ──
+    gc.collect()
+    logger.info(f"Memory after model load: {round(psutil.Process(os.getpid()).memory_info().rss / 1024 / 1024, 1)} MB")
 
 except Exception as e:
     logger.error(f"ONNX LOAD ERROR: {e}")
@@ -167,8 +176,8 @@ MAGIC_BYTES: dict[bytes, str] = {
 
 PATCH_SIZE    = model_imgsz    # ثابت — الموديل اتدرب على 256×256
 OVERLAP       = 0     #  overlap
-MAX_INPUT_DIM = 640   # resize الصورة الكبيرة قبل الـ tiling
-MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
+MAX_INPUT_DIM = 512   # تقليل لـ 512 لتوفير RAM على Render
+MAX_FILE_SIZE = 5 * 1024 * 1024  # 5 MB — تقليل لتوفير RAM
 
 # =====================================
 # Helpers
@@ -276,6 +285,7 @@ def postprocess_patch(
 
 
 def run_tiled_inference(image, conf_thresh, iou_thresh):
+    """FIX: conf_thresh/iou_thresh الآن بيتمرروا كـ parameters بدل ما كانوا undefined"""
     orig_h, orig_w = image.shape[:2]
     stride = PATCH_SIZE - OVERLAP
 
@@ -301,12 +311,14 @@ def run_tiled_inference(image, conf_thresh, iou_thresh):
                 patch  = padded_patch
                 ph, pw = PATCH_SIZE, PATCH_SIZE
 
-            tensor, scale, (pad_w, pad_h) = preprocess_patch(image, PATCH_SIZE)
+            # FIX: preprocess الـ patch مش الـ image الكاملة
+            tensor, scale, (pad_w, pad_h) = preprocess_patch(patch, PATCH_SIZE)
             outputs = session.run(None, {input_name: tensor})
             boxes, scores, class_ids = postprocess_patch(
-                outputs, image.shape[0], image.shape[1],
-                confidence, iou, scale, pad_w, pad_h
+                outputs, ph, pw,
+                conf_thresh, iou_thresh, scale, pad_w, pad_h
             )
+            # FIX: del مرة واحدة بس
             del tensor, outputs
 
             for box in boxes:
@@ -320,7 +332,7 @@ def run_tiled_inference(image, conf_thresh, iou_thresh):
             all_scores.extend(scores)
             all_class_ids.extend(class_ids)
 
-            del tensor, outputs, patch
+            del patch
 
     # تنظيف مرة واحدة بعد الـ loop
     gc.collect()
@@ -436,7 +448,7 @@ async def predict(
     contents = await file.read()
 
     if len(contents) > MAX_FILE_SIZE:
-        raise HTTPException(status_code=413, detail="File too large (max 10 MB)")
+        raise HTTPException(status_code=413, detail="File too large (max 5 MB)")
 
     # ── تحقق من الـ magic bytes الفعلية ──
     if not verify_image_magic(contents):
@@ -444,28 +456,33 @@ async def predict(
 
     nparr = np.frombuffer(contents, np.uint8)
     image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    del contents, nparr  # ← تنظيف مبكر لتوفير RAM
+    gc.collect()
+
     if image is None:
         raise HTTPException(status_code=400, detail="Cannot decode image")
 
     original_h, original_w = image.shape[:2]
 
     # ── Resize لو الصورة كبيرة جداً ──
+    display_scale = 1.0
     if max(original_h, original_w) > MAX_INPUT_DIM:
-        scale_down = MAX_INPUT_DIM / max(original_h, original_w)
+        display_scale = MAX_INPUT_DIM / max(original_h, original_w)
         image = cv2.resize(
             image, None,
-            fx=scale_down, fy=scale_down,
+            fx=display_scale, fy=display_scale,
             interpolation=cv2.INTER_AREA
         )
 
     start_time = time.time()
+    proc_h, proc_w = image.shape[:2]
 
     try:
-        if max(original_h, original_w) <= PATCH_SIZE:
+        if max(proc_h, proc_w) <= PATCH_SIZE:
             tensor, scale, (pad_w, pad_h) = preprocess_patch(image, PATCH_SIZE)
             outputs = session.run(None, {input_name: tensor})
             boxes, scores, class_ids = postprocess_patch(
-                outputs, original_h, original_w,
+                outputs, proc_h, proc_w,
                 confidence, iou, scale, pad_w, pad_h
             )
             del tensor, outputs
@@ -477,7 +494,7 @@ async def predict(
         logger.error(f"Inference error: {e}")
         raise HTTPException(status_code=500, detail="Inference failed. Please try again.")
     finally:
-        del image, nparr, contents
+        del image
         gc.collect()
 
     processing_ms = round((time.time() - start_time) * 1000)
@@ -519,13 +536,14 @@ async def predict(
             logger.error(f"MongoDB save error: {e}")
             # مش بيوقف الـ response
 
+    # FIX: الـ frontend بيقرأ display_scale مش scale_factor
     return {
-        "detections":   detections,
-        "count":        len(detections),
-        "max_severity": max_severity,
-        "image_size":   {"width": original_w, "height": original_h},
-        "scale_factor": 1.0,
-        "memory_mb":    memory_usage(),
+        "detections":    detections,
+        "count":         len(detections),
+        "max_severity":  max_severity,
+        "image_size":    {"width": original_w, "height": original_h},
+        "display_scale": display_scale,
+        "memory_mb":     memory_usage(),
     }
 
 # =====================================

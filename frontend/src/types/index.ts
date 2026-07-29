@@ -18,6 +18,7 @@ export interface DetectionResult {
   predictions: Prediction[];
   imageWidth?: number;
   imageHeight?: number;
+  sessionId?: string;
 }
 
 export type Severity = "Critical" | "High" | "Moderate" | "Low";
