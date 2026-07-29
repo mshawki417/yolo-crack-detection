@@ -20,7 +20,7 @@ const trainingImages: GalleryImage[] = [
     title: "Training Batch 1",
     subtitle: "SDNET Dataset Samples",
     description:
-      "عينة من الدفعة الأولى للتدريب تُظهر أنواعاً متعددة من أسطح الخرسانة (جدران W، أسطح D، أرصفة P) مع صناديق Bounding Boxes الحقيقية (Ground Truth) المعلَّمة باللون الأزرق. يتضح تنوع الإضاءة والزوايا والملمس.",
+      "Sample from the first training batch showing multiple concrete surface types (Walls W, Decks D, Pavements P) with ground truth bounding boxes marked in blue. Diverse lighting, angles, and texture are evident.",
     badge: { label: "Training Data", color: "bg-[#003d9b]/10 text-[#003d9b] border-[#003d9b]/20" },
   },
   {
@@ -28,7 +28,7 @@ const trainingImages: GalleryImage[] = [
     title: "Training Batch 2",
     subtitle: "Augmented Concrete Surfaces",
     description:
-      "دفعة تدريب ثانية تُبرز تنوع بيانات SDNET من حيث ألوان الخرسانة (رمادي، بني، أبيض) وأنواع التشققات. يستخدم النموذج هذا التنوع لتعلّم ميزات قابلة للتعميم على ظروف حقيقية مختلفة.",
+      "Second training batch highlights SDNET data diversity in concrete colors (gray, brown, white) and crack types. The model learns features generalizable to various real‑world conditions.",
     badge: { label: "Training Data", color: "bg-[#003d9b]/10 text-[#003d9b] border-[#003d9b]/20" },
   },
   {
@@ -36,7 +36,7 @@ const trainingImages: GalleryImage[] = [
     title: "Training Batch 3",
     subtitle: "Multi-surface Variety",
     description:
-      "الدفعة الثالثة تُظهر أقسام SDNET الثلاثة: Decks (D) وPavements (P) وWalls (W)، مع صور لا تشققات فيها (Negative samples) تساعد النموذج على تعلّم عدم إعطاء إنذارات كاذبة.",
+      "Third batch shows the three SDNET sections: Decks (D), Pavements (P), and Walls (W), including images without cracks (negative samples) to help the model learn not to raise false alerts.",
     badge: { label: "Training Data", color: "bg-[#003d9b]/10 text-[#003d9b] border-[#003d9b]/20" },
   },
 ];
@@ -47,7 +47,7 @@ const validationImages: GalleryImage[] = [
     title: "Validation Batch 1 — Predictions",
     subtitle: "Model Output on Unseen Data",
     description:
-      "نتائج النموذج على مجموعة التحقق. تظهر الصناديق الزرقاء مع نسبة الثقة (Confidence) فوق كل تشقق مكتشف. لاحظ دقة الاكتشاف حتى على التشققات الخفية وكيفية تجاهل النموذج للأسطح السليمة.",
+      "Model results on the validation set. Blue boxes with confidence scores appear above each detected crack. Notice detection accuracy even on subtle cracks and the model’s ability to ignore intact surfaces.",
     badge: { label: "Val Predictions", color: "bg-[#4f5f7b]/10 text-[#4f5f7b] border-[#4f5f7b]/20" },
   },
   {
@@ -55,7 +55,7 @@ const validationImages: GalleryImage[] = [
     title: "Validation Batch 2 — Predictions",
     subtitle: "High-confidence Detections",
     description:
-      "الدفعة الثانية من التحقق تُظهر اكتشافات بثقة عالية (0.7 – 1.0). يُلاحظ أن النموذج نجح في تمييز التشققات عن العيوب السطحية الأخرى، مما يعكس جودة التدريب على SDNET.",
+      "Second validation batch shows high‑confidence detections (0.7 – 1.0). The model successfully distinguishes cracks from other surface defects, reflecting quality training on SDNET.",
     badge: { label: "Val Predictions", color: "bg-[#4f5f7b]/10 text-[#4f5f7b] border-[#4f5f7b]/20" },
   },
   {
@@ -63,7 +63,7 @@ const validationImages: GalleryImage[] = [
     title: "Validation Batch 3 — Predictions",
     subtitle: "Complex Scene Detection",
     description:
-      "مشاهد معقدة تتضمن إضاءة غير متجانسة وأسطح ذات ألوان مختلفة. يُثبت النموذج قدرته على اكتشاف التشققات الدقيقة حتى في الظروف الصعبة، مع الحفاظ على نسبة منخفضة من الإيجابيات الكاذبة.",
+      "Complex scenes including uneven lighting and various surface colors. The model demonstrates its ability to detect subtle cracks even in difficult conditions, while maintaining a low false-positive rate.",
     badge: { label: "Val Predictions", color: "bg-[#4f5f7b]/10 text-[#4f5f7b] border-[#4f5f7b]/20" },
   },
 ];
@@ -74,7 +74,7 @@ const metricsImages: GalleryImage[] = [
     title: "Training & Validation Curves",
     subtitle: "60 Epochs — Full Training History",
     description:
-      "رسومات بيانية شاملة لـ 60 Epoch من التدريب. تُظهر Box Loss وClassification Loss وDFL Loss انخفاضاً متواصلاً يدل على تعلّم صحيح. أما Precision وRecall فترتفع بثبات إلى 0.88+ و0.85+، بينما يصل mAP@0.5 إلى 0.947 ومAP@0.5:0.95 إلى 0.94+.",
+      "Comprehensive plots for 60 training epochs. Box Loss, Classification Loss, and DFL Loss steadily decrease indicating proper learning. Precision and Recall rise consistently to 0.88+ and 0.85+, while mAP@0.5 reaches 0.947 and mAP@0.5:0.95 reaches 0.94+.",
     badge: { label: "Key Metric: mAP@0.5 = 94.7%", color: "bg-[#003d9b]/10 text-[#003d9b] border-[#003d9b]/20" },
   },
   {
@@ -82,7 +82,7 @@ const metricsImages: GalleryImage[] = [
     title: "Precision-Recall Curve",
     subtitle: "mAP@0.5 = 0.947",
     description:
-      "منحنى Precision-Recall يُظهر أداءً استثنائياً: يحافظ النموذج على Precision = 1.0 حتى Recall ≈ 0.4، ثم ينخفض تدريجياً مع ارتفاع Recall. المساحة تحت المنحنى (mAP@0.5) = 0.947، وهي نتيجة ممتازة لمهمة اكتشاف التشققات.",
+      "Precision‑Recall curve shows exceptional performance: the model maintains Precision = 1.0 up to Recall ≈ 0.4, then gradually drops as Recall increases. Area under curve (mAP@0.5) = 0.947, an excellent result for crack detection.",
     badge: { label: "mAP@0.5 = 94.7%", color: "bg-[#003d9b]/10 text-[#003d9b] border-[#003d9b]/20" },
   },
   {
@@ -90,7 +90,7 @@ const metricsImages: GalleryImage[] = [
     title: "F1-Confidence Curve",
     subtitle: "Best F1 = 0.87 at Conf. = 0.454",
     description:
-      "منحنى F1 مقابل عتبة الثقة. يصل النموذج إلى أفضل F1-Score = 0.87 عند Confidence Threshold = 0.454. هذا يعني توازناً مثالياً بين Precision وRecall عند هذه العتبة — وهي العتبة الموصى بها للاستخدام في الإنتاج.",
+      "F1‑Confidence curve. The model reaches its best F1‑Score = 0.87 at Confidence Threshold = 0.454, providing an optimal balance between Precision and Recall for production.",
     badge: { label: "Best F1 = 0.87 @ 0.454", color: "bg-[#7b2600]/10 text-[#7b2600] border-[#7b2600]/20" },
   },
   {
@@ -98,7 +98,7 @@ const metricsImages: GalleryImage[] = [
     title: "Confusion Matrix (Normalized)",
     subtitle: "Perfect Classification Rate",
     description:
-      "مصفوفة الالتباس المعيارية تُظهر أداءً مثالياً: 1.00 على كلا المحورين (crack ← crack، background ← background). يعني ذلك أن النموذج لا يخطئ في تصنيف التشققات كـ background والعكس — معدل إيجابيات كاذبة = 0%.",
+      "Normalized confusion matrix shows perfect performance: 1.00 on both axes (crack←crack, background←background). The model makes no classification errors, resulting in 0% false‑positive rate.",
     badge: { label: "Accuracy = 100%", color: "bg-[#ba1a1a]/10 text-[#ba1a1a] border-[#ba1a1a]/20" },
   },
 ];
@@ -148,7 +148,7 @@ function Lightbox({
               {image.badge.label}
             </span>
           )}
-          <p className="font-body-md text-[#434654] leading-relaxed" dir="rtl">
+          <p className="font-body-md text-[#434654] leading-relaxed">
             {image.description}
           </p>
         </div>
@@ -179,7 +179,7 @@ function ImageCard({
         <div className="absolute inset-0 bg-gradient-to-t from-black/50 to-transparent opacity-0 group-hover:opacity-100 transition-opacity flex items-end p-3">
           <span className="text-white font-body-sm flex items-center gap-1">
             <span className="material-symbols-outlined text-sm">zoom_in</span>
-            عرض بالحجم الكامل
+            View Full Size
           </span>
         </div>
       </div>
@@ -191,7 +191,7 @@ function ImageCard({
         )}
         <h4 className="font-title-sm text-[#191c1d] mb-1 text-base">{image.title}</h4>
         <p className="font-body-sm text-[#434654] mb-2">{image.subtitle}</p>
-        <p className="font-body-sm text-[#737685] line-clamp-2" dir="rtl">
+        <p className="font-body-sm text-[#737685] line-clamp-2">
           {image.description}
         </p>
       </div>
@@ -207,10 +207,10 @@ export default function AboutPage() {
   );
 
   const tabs = [
-    { id: "overview" as const, label: "نظرة عامة", icon: "info" },
-    { id: "training" as const, label: "بيانات التدريب", icon: "school" },
-    { id: "validation" as const, label: "نتائج التحقق", icon: "verified" },
-    { id: "metrics" as const, label: "مقاييس الأداء", icon: "bar_chart" },
+    { id: "overview" as const, label: "Overview", icon: "info" },
+    { id: "training" as const, label: "Training Data", icon: "school" },
+    { id: "validation" as const, label: "Validation Results", icon: "verified" },
+    { id: "metrics" as const, label: "Performance Metrics", icon: "bar_chart" },
   ];
 
   return (
@@ -266,8 +266,7 @@ export default function AboutPage() {
                 <span className="text-[#b2c5ff]">Using YOLOv11 + SDNET</span>
               </h1>
               <p className="font-body-md text-[#dae2ff] max-w-xl leading-relaxed mb-6">
-                نظام ذكاء اصطناعي متقدم لاكتشاف وتحليل التشققات في الهياكل الخرسانية باستخدام أحدث
-                إصدار من YOLO (v11) المدرَّب على مجموعة بيانات SDNET المعيارية للهياكل الخرسانية.
+                An advanced AI system for detecting and analyzing cracks in concrete structures using the latest YOLOv11 model trained on the standardized SDNET dataset.
               </p>
               {/* Stats Row */}
               <div className="flex flex-wrap gap-6">
@@ -275,7 +274,7 @@ export default function AboutPage() {
                   { value: "94.7%", label: "mAP@0.5" },
                   { value: "0.87", label: "F1-Score" },
                   { value: "60", label: "Epochs" },
-                  { value: "3 Classes", label: "SDNET Surfaces" },
+                  { value: "2", label: "Classes" },
                 ].map((stat) => (
                   <div key={stat.label} className="text-center">
                     <div className="font-display-lg text-white">{stat.value}</div>
@@ -329,22 +328,17 @@ export default function AboutPage() {
                 <div className="lg:col-span-2 bg-[#ffffff] rounded-xl border border-[#c3c6d6]/50 shadow-sm p-6">
                   <div className="flex items-center gap-2 mb-4">
                     <span className="material-symbols-outlined text-[#003d9b]">description</span>
-                    <h3 className="font-title-sm text-[#191c1d]">ملخص المشروع</h3>
+                    <h3 className="font-title-sm text-[#191c1d]">Project Summary</h3>
                   </div>
-                  <div className="space-y-4 font-body-md text-[#434654] leading-relaxed" dir="rtl">
+                  <div className="space-y-4 font-body-md text-[#434654] leading-relaxed">
                     <p>
-                      يهدف هذا المشروع إلى بناء نظام متكامل للكشف التلقائي عن التشققات في الهياكل الخرسانية
-                      (الجسور، الأنفاق، الجدران، الأرصفة) باستخدام نموذج <strong className="text-[#191c1d]">YOLOv11</strong>،
-                      وهو أحدث إصدار من عائلة نماذج YOLO للكشف عن الأجسام في الوقت الفعلي.
+                      This project aims to build a comprehensive system for automatic crack detection in concrete structures (bridges, tunnels, walls, pavements) using the <strong className="text-[#191c1d]">YOLOv11</strong> model, the latest real‑time object detection architecture.
                     </p>
                     <p>
-                      تم تدريب النموذج على مجموعة بيانات <strong className="text-[#191c1d]">SDNET2018</strong>
-                      (Structural Defects Network) التي تحتوي على أكثر من 56,000 صورة لأسطح خرسانية
-                      تم جمعها من ثلاثة أنواع من الهياكل: Decks (أسطح) وPavements (أرصفة) وWalls (جدران).
+                      The model was trained on the <strong className="text-[#191c1d]">SDNET2018</strong> dataset (Structural Defects Network) containing over 56,000 images of concrete surfaces, collected from two classes (crack and background) across three surface types: Decks, Pavements, and Walls.
                     </p>
                     <p>
-                      حقق النموذج <strong className="text-[#003d9b]">mAP@0.5 = 94.7%</strong> وF1-Score = 0.87،
-                      مما يجعله مناسباً للاستخدام في تطبيقات المراقبة الهيكلية الفعلية (Structural Health Monitoring).
+                      The model achieved <strong className="text-[#003d9b]">mAP@0.5 = 94.7%</strong> and an F1‑Score of 0.87, making it suitable for real‑world Structural Health Monitoring applications.
                     </p>
                   </div>
                 </div>
@@ -353,7 +347,7 @@ export default function AboutPage() {
                 <div className="bg-[#ffffff] rounded-xl border border-[#c3c6d6]/50 shadow-sm p-6">
                   <div className="flex items-center gap-2 mb-4">
                     <span className="material-symbols-outlined text-[#003d9b]">memory</span>
-                    <h3 className="font-title-sm text-[#191c1d]">التقنيات المستخدمة</h3>
+                    <h3 className="font-title-sm text-[#191c1d]">Tech Stack</h3>
                   </div>
                   <div className="space-y-3">
                     {[
@@ -381,7 +375,7 @@ export default function AboutPage() {
               <div>
                 <h3 className="font-title-sm text-[#191c1d] mb-4 flex items-center gap-2">
                   <span className="material-symbols-outlined text-[#003d9b]">leaderboard</span>
-                  مقاييس الأداء الرئيسية
+                  Key Performance Metrics
                 </h3>
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                   {[
@@ -406,13 +400,13 @@ export default function AboutPage() {
               <div className="bg-[#f3f4f5] rounded-xl border border-[#c3c6d6]/50 p-6">
                 <div className="flex items-center gap-2 mb-4">
                   <span className="material-symbols-outlined text-[#003d9b]">dataset</span>
-                  <h3 className="font-title-sm text-[#191c1d]">عن مجموعة بيانات SDNET2018</h3>
+                  <h3 className="font-title-sm text-[#191c1d]">About SDNET2018 Dataset</h3>
                 </div>
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
                   {[
-                    { label: "Deck (D) — أسطح", count: "~17,000 صورة", desc: "أسطح خرسانية للجسور والطرق العلوية", icon: "view_in_ar" },
-                    { label: "Pavement (P) — أرصفة", count: "~16,000 صورة", desc: "أرصفة وأسطح خرسانية على الأرض", icon: "view_quilt" },
-                    { label: "Wall (W) — جدران", count: "~20,000 صورة", desc: "جدران خرسانية عمودية وأسطح داخلية", icon: "wall" },
+                    { label: "Deck (D) — Surfaces", count: "~17,000 images", desc: "Concrete deck surfaces for bridges and overpasses", icon: "view_in_ar" },
+                    { label: "Pavement (P) — Pavements", count: "~16,000 images", desc: "Ground‑level concrete pavements", icon: "view_quilt" },
+                    { label: "Wall (W) — Walls", count: "~20,000 images", desc: "Vertical concrete walls and interior surfaces", icon: "wall" },
                   ].map((cat) => (
                     <div key={cat.label} className="bg-[#ffffff] rounded-lg p-4 border border-[#c3c6d6]/50">
                       <div className="flex items-center gap-2 mb-2">
@@ -424,9 +418,9 @@ export default function AboutPage() {
                     </div>
                   ))}
                 </div>
-                <p className="font-body-sm text-[#434654]" dir="rtl">
-                  تم تقسيم البيانات إلى صور تحتوي على تشققات (Cracked) وصور بدون تشققات (Uncracked)،
-                  مما يساعد النموذج على تعلّم التمييز الدقيق بين العيوب الهيكلية والأسطح السليمة.
+                <p className="font-body-sm text-[#434654]">
+                  The data was divided into images containing cracks (Cracked) and images without cracks (Uncracked),
+                  helping the model learn to distinguish accurately between structural defects and intact surfaces.
                 </p>
               </div>
 
@@ -434,11 +428,11 @@ export default function AboutPage() {
               <div className="bg-[#ffffff] rounded-xl border border-[#c3c6d6]/50 shadow-sm p-6">
                 <div className="flex items-center gap-2 mb-5">
                   <span className="material-symbols-outlined text-[#003d9b]">account_tree</span>
-                  <h3 className="font-title-sm text-[#191c1d]">معمارية النظام</h3>
+                  <h3 className="font-title-sm text-[#191c1d]">System Architecture</h3>
                 </div>
                 <div className="flex flex-col md:flex-row items-center gap-3 flex-wrap justify-center">
                   {[
-                    { icon: "image", label: "صورة الإدخال", sub: "JPG / PNG / TIFF", color: "bg-[#dae2ff] text-[#003d9b]" },
+                    { icon: "image", label: "Input Image", sub: "JPG / PNG / TIFF", color: "bg-[#dae2ff] text-[#003d9b]" },
                     { icon: "arrow_forward", label: "", sub: "", color: "" },
                     { icon: "upload_file", label: "FastAPI Backend", sub: "/predict endpoint", color: "bg-[#edeeef] text-[#434654]" },
                     { icon: "arrow_forward", label: "", sub: "", color: "" },
@@ -468,12 +462,9 @@ export default function AboutPage() {
             <div className="flex flex-col gap-6">
               <div className="bg-[#f3f4f5] rounded-xl p-5 border border-[#c3c6d6]/50 flex items-start gap-3">
                 <span className="material-symbols-outlined text-[#003d9b] mt-0.5">info</span>
-                <div dir="rtl">
-                  <h3 className="font-title-sm text-[#191c1d] mb-1">بيانات التدريب</h3>
-                  <p className="font-body-md text-[#434654]">
-                    تُظهر هذه الصور دُفعات التدريب (Training Batches) مع صناديق Bounding Boxes الحقيقية (Ground Truth Labels)
-                    باللون الأزرق. هذه البيانات هي ما يتعلم منها النموذج التعرف على التشققات في ظروف متنوعة.
-                  </p>
+                <div>
+                  <h3 className="font-title-sm text-[#191c1d] mb-1">Training Data</h3>
+                  <p className="font-body-md text-[#434654]">These images display the training batches with ground‑truth bounding boxes marked in blue. This data teaches the model to recognize cracks under diverse conditions.</p>
                 </div>
               </div>
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
@@ -485,11 +476,11 @@ export default function AboutPage() {
               <div className="bg-[#ffffff] rounded-xl border border-[#c3c6d6]/50 shadow-sm p-6">
                 <h3 className="font-title-sm text-[#191c1d] mb-2 flex items-center gap-2">
                   <span className="material-symbols-outlined text-[#003d9b]">label</span>
-                  توزيع التصنيفات والحجوم (Labels Distribution)
+                  Labels Distribution
                 </h3>
-                <p className="font-body-sm text-[#434654] mb-4" dir="rtl">
-                  يُظهر هذا الرسم البياني توزيع أحجام وتوضع Bounding Boxes في مجموعة بيانات SDNET.
-                  يُلاحظ أن معظم التشققات تقع في مناطق متوسطة من الصورة مع تباين كبير في الأحجام.
+                <p className="font-body-sm text-[#434654] mb-4">
+                  This chart shows the distribution of bounding box sizes and positions in the SDNET dataset.
+                  Most cracks are located in mid-image regions with significant variation in sizes.
                 </p>
                 <div
                   className="rounded-lg overflow-hidden border border-[#c3c6d6]/50 cursor-pointer"
@@ -497,7 +488,7 @@ export default function AboutPage() {
                     src: "/project-images/labels.jpg",
                     title: "Labels Distribution",
                     subtitle: "SDNET Dataset Statistics",
-                    description: "يُظهر هذا الرسم البياني توزيع أحجام وتوضع Bounding Boxes في مجموعة بيانات SDNET. يُلاحظ أن معظم التشققات تقع في مناطق متوسطة من الصورة مع تباين كبير في الأحجام يعكس تنوع أنواع وأعماق التشققات.",
+                    description: "This chart shows the distribution of bounding box sizes and positions in the SDNET dataset. Most cracks are located in mid-image regions with significant size variation reflecting the diversity of crack types and depths.",
                   })}
                 >
                   <img src="/project-images/labels.jpg" alt="Labels distribution" className="w-full object-contain max-h-64" />
@@ -511,11 +502,11 @@ export default function AboutPage() {
             <div className="flex flex-col gap-6">
               <div className="bg-[#f3f4f5] rounded-xl p-5 border border-[#c3c6d6]/50 flex items-start gap-3">
                 <span className="material-symbols-outlined text-[#4f5f7b] mt-0.5">verified</span>
-                <div dir="rtl">
-                  <h3 className="font-title-sm text-[#191c1d] mb-1">نتائج التحقق (Validation Results)</h3>
+                <div>
+                  <h3 className="font-title-sm text-[#191c1d] mb-1">Validation Results</h3>
                   <p className="font-body-md text-[#434654]">
-                    هذه الصور تُظهر أداء النموذج على بيانات لم يرها خلال التدريب. الصناديق الزرقاء هي تنبؤات النموذج
-                    مع نسبة الثقة. كلما ارتفعت نسبة الثقة واتطابقت الصناديق مع التشققات الفعلية، كان النموذج أفضل.
+                    These images show the model's performance on unseen data. Blue boxes represent the model's predictions
+                    with confidence scores. Higher confidence and accurate box alignment indicate better model performance.
                   </p>
                 </div>
               </div>
@@ -532,11 +523,11 @@ export default function AboutPage() {
             <div className="flex flex-col gap-6">
               <div className="bg-[#f3f4f5] rounded-xl p-5 border border-[#c3c6d6]/50 flex items-start gap-3">
                 <span className="material-symbols-outlined text-[#7b2600] mt-0.5">bar_chart</span>
-                <div dir="rtl">
-                  <h3 className="font-title-sm text-[#191c1d] mb-1">مقاييس الأداء التفصيلية</h3>
+                <div>
+                  <h3 className="font-title-sm text-[#191c1d] mb-1">Detailed Performance Metrics</h3>
                   <p className="font-body-md text-[#434654]">
-                    رسومات بيانية تُظهر تطور أداء النموذج خلال التدريب ونتائجه النهائية. تشمل:
-                    منحنيات Loss وPrecision وRecall وF1 ومصفوفة الالتباس.
+                    Charts showing the model's performance progression during training and final results, including
+                    Loss, Precision, Recall, F1 curves, and the Confusion Matrix.
                   </p>
                 </div>
               </div>
@@ -550,32 +541,32 @@ export default function AboutPage() {
               <div className="bg-[#ffffff] rounded-xl border border-[#c3c6d6]/50 shadow-sm overflow-hidden">
                 <div className="p-5 border-b border-[#c3c6d6]/30 flex items-center gap-2">
                   <span className="material-symbols-outlined text-[#003d9b]">table_chart</span>
-                  <h3 className="font-title-sm text-[#191c1d]">جدول مقاييس الأداء النهائية</h3>
+                  <h3 className="font-title-sm text-[#191c1d]">Final Performance Metrics Table</h3>
                 </div>
                 <div className="overflow-x-auto">
                   <table className="w-full text-left border-collapse">
                     <thead>
                       <tr className="bg-[#f3f4f5] border-b border-[#c3c6d6]/30">
-                        {["المقياس", "القيمة", "التفسير", "الحكم"].map((h) => (
+                        {["Metric", "Value", "Interpretation", "Verdict"].map((h) => (
                           <th key={h} className="px-5 py-3 font-label-caps text-[#737685] uppercase">{h}</th>
                         ))}
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-[#c3c6d6]/30 font-body-md">
                       {[
-                        { metric: "mAP@0.5", value: "94.7%", interp: "متوسط الدقة عند IoU=0.5", verdict: "ممتاز", vClass: "text-[#003d9b]" },
-                        { metric: "mAP@0.5:0.95", value: "94.0%", interp: "متوسط الدقة الصارم", verdict: "ممتاز", vClass: "text-[#003d9b]" },
-                        { metric: "F1-Score", value: "0.87", interp: "توازن Precision-Recall @ 0.454", verdict: "جيد جداً", vClass: "text-[#4f5f7b]" },
-                        { metric: "Box Precision", value: "88%+", interp: "دقة مواضع الصناديق", verdict: "جيد جداً", vClass: "text-[#4f5f7b]" },
-                        { metric: "Box Recall", value: "85%+", interp: "نسبة اكتشاف التشققات", verdict: "جيد", vClass: "text-[#4f5f7b]" },
-                        { metric: "Confusion Matrix", value: "1.00 / 1.00", interp: "لا أخطاء تصنيف نهائياً", verdict: "مثالي", vClass: "text-[#003d9b]" },
-                        { metric: "Training Epochs", value: "60", interp: "عدد دورات التدريب الكاملة", verdict: "مناسب", vClass: "text-[#737685]" },
-                        { metric: "Optimal Conf.", value: "0.454", interp: "أفضل عتبة ثقة للإنتاج", verdict: "موصى به", vClass: "text-[#7b2600]" },
+                        { metric: "mAP@0.5", value: "94.7%", interp: "Mean Average Precision at IoU=0.5", verdict: "Excellent", vClass: "text-[#003d9b]" },
+                        { metric: "mAP@0.5:0.95", value: "94.0%", interp: "Strict Average Precision", verdict: "Excellent", vClass: "text-[#003d9b]" },
+                        { metric: "F1-Score", value: "0.87", interp: "Precision-Recall balance @ 0.454", verdict: "Very Good", vClass: "text-[#4f5f7b]" },
+                        { metric: "Box Precision", value: "88%+", interp: "Bounding box position accuracy", verdict: "Very Good", vClass: "text-[#4f5f7b]" },
+                        { metric: "Box Recall", value: "85%+", interp: "Crack detection rate", verdict: "Good", vClass: "text-[#4f5f7b]" },
+                        { metric: "Confusion Matrix", value: "1.00 / 1.00", interp: "Zero classification errors", verdict: "Perfect", vClass: "text-[#003d9b]" },
+                        { metric: "Training Epochs", value: "60", interp: "Total training cycles completed", verdict: "Adequate", vClass: "text-[#737685]" },
+                        { metric: "Optimal Conf.", value: "0.454", interp: "Best confidence threshold for production", verdict: "Recommended", vClass: "text-[#7b2600]" },
                       ].map((row) => (
                         <tr key={row.metric} className="hover:bg-[#f8f9fa] transition-colors">
                           <td className="px-5 py-3 font-data-mono text-[#191c1d] font-semibold">{row.metric}</td>
                           <td className="px-5 py-3 font-data-mono text-[#003d9b] font-semibold">{row.value}</td>
-                          <td className="px-5 py-3 text-[#434654]" dir="rtl">{row.interp}</td>
+                          <td className="px-5 py-3 text-[#434654]">{row.interp}</td>
                           <td className={`px-5 py-3 font-semibold ${row.vClass}`}>{row.verdict}</td>
                         </tr>
                       ))}

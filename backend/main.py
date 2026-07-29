@@ -284,76 +284,7 @@ def postprocess_patch(
     return final_boxes, final_scores, final_class_ids
 
 
-def run_tiled_inference(image, conf_thresh, iou_thresh):
-    """FIX: conf_thresh/iou_thresh الآن بيتمرروا كـ parameters بدل ما كانوا undefined"""
-    orig_h, orig_w = image.shape[:2]
-    stride = PATCH_SIZE - OVERLAP
 
-    all_boxes, all_scores, all_class_ids = [], [], []
-
-    for y in range(0, orig_h, stride):
-        for x in range(0, orig_w, stride):
-            x2_patch = min(x + PATCH_SIZE, orig_w)
-            y2_patch = min(y + PATCH_SIZE, orig_h)
-            x1_patch = max(0, x2_patch - PATCH_SIZE)
-            y1_patch = max(0, y2_patch - PATCH_SIZE)
-
-            patch    = image[y1_patch:y2_patch, x1_patch:x2_patch]
-            ph, pw   = patch.shape[:2]
-
-            # padding لو الـ patch أصغر
-            if ph < PATCH_SIZE or pw < PATCH_SIZE:
-                padded_patch = np.zeros(
-                    (PATCH_SIZE, PATCH_SIZE, 3), dtype=np.uint8
-                )
-                padded_patch[:] = 114
-                padded_patch[:ph, :pw] = patch
-                patch  = padded_patch
-                ph, pw = PATCH_SIZE, PATCH_SIZE
-
-            # FIX: preprocess الـ patch مش الـ image الكاملة
-            tensor, scale, (pad_w, pad_h) = preprocess_patch(patch, PATCH_SIZE)
-            outputs = session.run(None, {input_name: tensor})
-            boxes, scores, class_ids = postprocess_patch(
-                outputs, ph, pw,
-                conf_thresh, iou_thresh, scale, pad_w, pad_h
-            )
-            # FIX: del مرة واحدة بس
-            del tensor, outputs
-
-            for box in boxes:
-                bx1 = max(0, min(orig_w, box[0] + x1_patch))
-                by1 = max(0, min(orig_h, box[1] + y1_patch))
-                bx2 = max(0, min(orig_w, box[2] + x1_patch))
-                by2 = max(0, min(orig_h, box[3] + y1_patch))
-                if bx2 > bx1 and by2 > by1:
-                    all_boxes.append([bx1, by1, bx2, by2])
-
-            all_scores.extend(scores)
-            all_class_ids.extend(class_ids)
-
-            del patch
-
-    # تنظيف مرة واحدة بعد الـ loop
-    gc.collect()
-
-    # NMS شاملة
-    final_boxes, final_scores, final_class_ids = [], [], []
-    if all_boxes:
-        boxes_xywh = [
-            [b[0], b[1], b[2] - b[0], b[3] - b[1]]
-            for b in all_boxes
-        ]
-        indices = cv2.dnn.NMSBoxes(
-            boxes_xywh, all_scores, conf_thresh, iou_thresh
-        )
-        if len(indices) > 0:
-            for i in indices.flatten():
-                final_boxes.append(all_boxes[i])
-                final_scores.append(round(all_scores[i], 4))
-                final_class_ids.append(all_class_ids[i])
-
-    return final_boxes, final_scores, final_class_ids
 
 # =====================================
 # Routes
@@ -478,18 +409,14 @@ async def predict(
     proc_h, proc_w = image.shape[:2]
 
     try:
-        if max(proc_h, proc_w) <= PATCH_SIZE:
-            tensor, scale, (pad_w, pad_h) = preprocess_patch(image, PATCH_SIZE)
-            outputs = session.run(None, {input_name: tensor})
-            boxes, scores, class_ids = postprocess_patch(
-                outputs, proc_h, proc_w,
-                confidence, iou, scale, pad_w, pad_h
-            )
-            del tensor, outputs
-        else:
-            boxes, scores, class_ids = run_tiled_inference(
-                image, confidence, iou
-            )
+        # Run single-pass inference (much faster, no grid artifacts)
+        tensor, scale, (pad_w, pad_h) = preprocess_patch(image, PATCH_SIZE)
+        outputs = session.run(None, {input_name: tensor})
+        boxes, scores, class_ids = postprocess_patch(
+            outputs, proc_h, proc_w,
+            confidence, iou, scale, pad_w, pad_h
+        )
+        del tensor, outputs
     except Exception as e:
         logger.error(f"Inference error: {e}")
         raise HTTPException(status_code=500, detail="Inference failed. Please try again.")

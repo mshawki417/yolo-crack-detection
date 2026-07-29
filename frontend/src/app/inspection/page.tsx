@@ -91,33 +91,70 @@ export default function InspectionPage() {
     if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
+  const extractFrameFromVideo = (videoFile: File): Promise<File> => {
+    return new Promise((resolve, reject) => {
+      const video = document.createElement("video");
+      const url = URL.createObjectURL(videoFile);
+      video.src = url;
+      video.muted = true;
+      video.crossOrigin = "anonymous";
+      
+      video.onloadedmetadata = () => {
+        // Seek to the middle of the video or 1 second, whichever is shorter
+        video.currentTime = Math.min(1, video.duration / 2);
+      };
+
+      video.onseeked = () => {
+        const canvas = document.createElement("canvas");
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) return reject(new Error("Cannot create canvas context"));
+        
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        canvas.toBlob((blob) => {
+          URL.revokeObjectURL(url);
+          if (!blob) return reject(new Error("Failed to extract frame"));
+          const frameFile = new File([blob], "extracted_frame.jpg", { type: "image/jpeg" });
+          resolve(frameFile);
+        }, "image/jpeg", 0.95);
+      };
+
+      video.onerror = () => {
+        URL.revokeObjectURL(url);
+        reject(new Error("Failed to load video file"));
+      };
+    });
+  };
+
   const handleStartAnalysis = async () => {
     if (!selectedFile) return;
   
-    // ← أضف هذا أولاً
-    if (inputMode === "video") {
-      setErrorMsg("Video analysis is coming soon. Please upload an image (JPG, PNG, WEBP).");
-      setUploadStatus("error");
-      return;
-    }
     setUploadStatus("analyzing");
     setErrorMsg("");
   
     try {
-      const result: DetectionResult = await detectCracks(selectedFile, {
+      let fileToAnalyze = selectedFile;
+      
+      if (inputMode === "video" || selectedFile.type.startsWith("video/")) {
+        // Extract a key frame from the video to prevent backend crash
+        fileToAnalyze = await extractFrameFromVideo(selectedFile);
+      }
+
+      const result: DetectionResult = await detectCracks(fileToAnalyze, {
         confidence: params.confidence,
         iou: params.iou,
       });
   
-      // تحويل الصورة لـ base64 عشان تبقى صالحة بعد الـ navigation
+      // Convert image to base64 so it remains valid after navigation
       const base64Image = await new Promise<string>((resolve) => {
         const reader = new FileReader();
         reader.onloadend = () => resolve(reader.result as string);
-        reader.readAsDataURL(selectedFile);
+        reader.readAsDataURL(fileToAnalyze);
       });
   
       sessionStorage.setItem("detectionResult", JSON.stringify(result));
-      sessionStorage.setItem("detectionImageUrl", base64Image); // ← base64 بدل blob
+      sessionStorage.setItem("detectionImageUrl", base64Image);
       router.push("/results");
     } catch (err) {
       const msg = err instanceof Error
