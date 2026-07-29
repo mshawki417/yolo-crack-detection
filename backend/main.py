@@ -152,7 +152,7 @@ except Exception as e:
 # =====================================
 # Config — ثابت بغض النظر عن الموديل
 # =====================================
-CLASS_NAMES = {0: "crack", 1: "no-crack"}
+CLASS_NAMES = {0: "crack"}  # Model has 1 class only
 
 SEVERITY_THRESHOLDS = {
     "Critical": 0.9,
@@ -174,9 +174,11 @@ MAGIC_BYTES: dict[bytes, str] = {
     b'MM\x00*':      "tiff",
 }
 
-PATCH_SIZE    = model_imgsz    # ثابت — الموديل اتدرب على 256×256
-OVERLAP       = 64    # overlap عشان الشقوق اللي على الحواف
-MAX_INPUT_DIM = 2560  # زيادة الحجم لعدم تصغير الصورة بشكل كبير والحفاظ على دقة الشقوق
+# Inference parameters
+CROP_SIZE     = 256   # crop window from the original image
+PATCH_SIZE    = 640   # model input size (must be 640x640)
+OVERLAP       = 64    # overlap between crops
+MAX_INPUT_DIM = 4000  # max dimension before downscaling
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
 
 # =====================================
@@ -236,15 +238,20 @@ def postprocess_patch(
     conf_thresh, iou_thresh,
     scale, pad_w, pad_h
 ):
-    preds = outputs[0][0].T  # [num_anchors, 4+num_classes]
+    """
+    Decode YOLOv11 ONNX output.
+    Output shape: [1, 5, 8400]  ->  5 = 4 box coords + 1 class score (crack)
+    """
+    raw = outputs[0][0]   # shape [5, 8400]
+    if raw.shape[0] < raw.shape[1]:
+        raw = raw.T       # [8400, 5]
 
     boxes_xywh, scores_list, class_ids_list = [], [], []
 
-    for pred in preds:
-        cx, cy, w, h   = pred[:4]
-        class_scores   = pred[4:]
-        class_id       = int(np.argmax(class_scores))
-        confidence     = float(class_scores[class_id])
+    for pred in raw:
+        cx, cy, w, h = pred[:4]
+        confidence   = float(pred[4])   # single-class score
+        class_id     = 0                # only class: crack
 
         if confidence < conf_thresh:
             continue
@@ -409,14 +416,50 @@ async def predict(
     proc_h, proc_w = image.shape[:2]
 
     try:
-        # Run single-pass inference (much faster, no grid artifacts)
-        tensor, scale, (pad_w, pad_h) = preprocess_patch(image, PATCH_SIZE)
-        outputs = session.run(None, {input_name: tensor})
-        boxes, scores, class_ids = postprocess_patch(
-            outputs, proc_h, proc_w,
-            confidence, iou, scale, pad_w, pad_h
-        )
-        del tensor, outputs
+        # ── Sliding Window inference ──
+        # Crop CROP_SIZE windows from original image (preserve crack detail),
+        # letterbox each crop to PATCH_SIZE (640) before inference.
+        stride = CROP_SIZE - OVERLAP
+        all_boxes, all_scores, all_class_ids = [], [], []
+
+        for y in range(0, proc_h, stride):
+            for x in range(0, proc_w, stride):
+                y2 = min(y + CROP_SIZE, proc_h)
+                x2 = min(x + CROP_SIZE, proc_w)
+                y1 = max(0, y2 - CROP_SIZE)
+                x1 = max(0, x2 - CROP_SIZE)
+
+                patch = image[y1:y2, x1:x2]
+                # Letterbox crop → 640×640 for inference
+                tensor, scale, (pad_w, pad_h) = preprocess_patch(patch, PATCH_SIZE)
+                outputs = session.run(None, {input_name: tensor})
+                p_boxes, p_scores, p_class_ids = postprocess_patch(
+                    outputs, patch.shape[0], patch.shape[1],
+                    confidence, iou, scale, pad_w, pad_h
+                )
+                # Remap to full image coords
+                for box in p_boxes:
+                    box[0] += x1; box[1] += y1
+                    box[2] += x1; box[3] += y1
+                all_boxes.extend(p_boxes)
+                all_scores.extend(p_scores)
+                all_class_ids.extend(p_class_ids)
+                del tensor, outputs, patch
+
+        # Global NMS
+        boxes, scores, class_ids = [], [], []
+        if all_boxes:
+            nms_in = [[b[0], b[1], b[2]-b[0], b[3]-b[1]] for b in all_boxes]
+            indices = cv2.dnn.NMSBoxes(nms_in, all_scores, confidence, iou)
+            if len(indices) > 0:
+                for i in indices.flatten():
+                    boxes.append(all_boxes[i])
+                    scores.append(all_scores[i])
+                    class_ids.append(all_class_ids[i])
+        del all_boxes, all_scores, all_class_ids
+
+        logger.info(f"Sliding window done: {len(boxes)} detections")
+
     except Exception as e:
         logger.error(f"Inference error: {e}")
         raise HTTPException(status_code=500, detail="Inference failed. Please try again.")
