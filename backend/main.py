@@ -175,9 +175,9 @@ MAGIC_BYTES: dict[bytes, str] = {
 }
 
 PATCH_SIZE    = model_imgsz    # ثابت — الموديل اتدرب على 256×256
-OVERLAP       = 0     #  overlap
-MAX_INPUT_DIM = 512   # تقليل لـ 512 لتوفير RAM على Render
-MAX_FILE_SIZE = 5 * 1024 * 1024  # 5 MB — تقليل لتوفير RAM
+OVERLAP       = 64    # overlap عشان الشقوق اللي على الحواف
+MAX_INPUT_DIM = 2560  # زيادة الحجم لعدم تصغير الصورة بشكل كبير والحفاظ على دقة الشقوق
+MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
 
 # =====================================
 # Helpers

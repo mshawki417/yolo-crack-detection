@@ -98,3 +98,25 @@ export async function warmupBackend(): Promise<void> {
     // ignore
   }
 }
+
+// ── Dashboard Stats ──
+export async function getDashboardStats() {
+  try {
+    const response = await fetch(`${API_BASE_URL}/stats`, { method: "GET" });
+    if (!response.ok) return null;
+    return await response.json();
+  } catch {
+    return null;
+  }
+}
+
+// ── History ──
+export async function getInspectionHistory(limit: number = 20) {
+  try {
+    const response = await fetch(`${API_BASE_URL}/history?limit=${limit}`, { method: "GET" });
+    if (!response.ok) return null;
+    return await response.json();
+  } catch {
+    return null;
+  }
+}

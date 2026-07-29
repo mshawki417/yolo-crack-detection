@@ -14,10 +14,7 @@ const mainNavItems: NavItem[] = [
   { label: "Dashboard", icon: "dashboard", href: "/" },
   { label: "New Inspection", icon: "add_box", href: "/inspection" },
   { label: "Detection Results", icon: "visibility", href: "/results" },
-  { label: "Crack Analysis", icon: "analytics", href: "/analysis" },
   { label: "Project Details", icon: "info", href: "/about" },
-  { label: "Analytics", icon: "insights", href: "/analytics" },
-  { label: "Reports", icon: "description", href: "/reports" },
 ];
 
 const bottomNavItems: NavItem[] = [];
