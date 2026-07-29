@@ -152,7 +152,7 @@ except Exception as e:
 # =====================================
 # Config — ثابت بغض النظر عن الموديل
 # =====================================
-CLASS_NAMES = {0: "crack", 1: "no-crack"}
+CLASS_NAMES = {0: "no-crack", 1: "crack"}
 
 SEVERITY_THRESHOLDS = {
     "Critical": 0.9,
@@ -409,14 +409,62 @@ async def predict(
     proc_h, proc_w = image.shape[:2]
 
     try:
-        # Run single-pass inference (much faster, no grid artifacts)
-        tensor, scale, (pad_w, pad_h) = preprocess_patch(image, PATCH_SIZE)
-        outputs = session.run(None, {input_name: tensor})
-        boxes, scores, class_ids = postprocess_patch(
-            outputs, proc_h, proc_w,
-            confidence, iou, scale, pad_w, pad_h
-        )
-        del tensor, outputs
+        # ── Sliding Window inference for maximum accuracy ──
+        stride = PATCH_SIZE - OVERLAP
+        all_boxes, all_scores, all_class_ids = [], [], []
+        patch_count = 0
+        MIN_BOX_AREA = 64
+
+        for y in range(0, proc_h, stride):
+            for x in range(0, proc_w, stride):
+                y2 = min(y + PATCH_SIZE, proc_h)
+                x2 = min(x + PATCH_SIZE, proc_w)
+                y1 = max(0, y2 - PATCH_SIZE)
+                x1 = max(0, x2 - PATCH_SIZE)
+
+                patch = image[y1:y2, x1:x2]
+                tensor, scale, (pad_w, pad_h) = preprocess_patch(patch, PATCH_SIZE)
+                outputs = session.run(None, {input_name: tensor})
+                p_boxes, p_scores, p_class_ids = postprocess_patch(
+                    outputs, patch.shape[0], patch.shape[1],
+                    confidence, iou, scale, pad_w, pad_h
+                )
+
+                for box in p_boxes:
+                    box[0] += x1
+                    box[1] += y1
+                    box[2] += x1
+                    box[3] += y1
+
+                all_boxes.extend(p_boxes)
+                all_scores.extend(p_scores)
+                all_class_ids.extend(p_class_ids)
+
+                del tensor, outputs, patch
+                patch_count += 1
+                if patch_count % 8 == 0:
+                    gc.collect()
+
+        # ── Global NMS ──
+        boxes, scores, class_ids = [], [], []
+        if all_boxes:
+            nms_input = [[b[0], b[1], b[2] - b[0], b[3] - b[1]] for b in all_boxes]
+            indices = cv2.dnn.NMSBoxes(nms_input, all_scores, confidence, iou)
+            if len(indices) > 0:
+                for i in indices.flatten():
+                    # 1 is "crack", 0 is "no-crack"
+                    if all_class_ids[i] != 1:
+                        continue
+                    b = all_boxes[i]
+                    area = (b[2] - b[0]) * (b[3] - b[1])
+                    if area < MIN_BOX_AREA:
+                        continue
+                    boxes.append(b)
+                    scores.append(all_scores[i])
+                    class_ids.append(all_class_ids[i])
+
+        del all_boxes, all_scores, all_class_ids
+
     except Exception as e:
         logger.error(f"Inference error: {e}")
         raise HTTPException(status_code=500, detail="Inference failed. Please try again.")
