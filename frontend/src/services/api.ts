@@ -15,31 +15,51 @@ interface BackendResponse {
   detections: BackendDetection[];
   count: number;
   image_size: { width: number; height: number };
-  scale_factor: number;
+  display_scale: number;   // ← تغير من scale_factor
+  session_id: string | null;
   memory_mb: number;
 }
 
 // ── Transform backend → frontend shape ──
+// display_scale = نسبة الـ resize في الـ backend (مثلاً 0.5 لو الصورة اتقسمت لنص)
+// الـ boxes بتيجي بـ coordinates الصورة الـ resized
+// عشان نرسمهم صح على الصورة الـ original نضرب في (1 / display_scale)
 function transformResponse(
   data: BackendResponse,
   filename: string
 ): DetectionResult {
-  const s = data.scale_factor ?? 1.0;
+  const factor = 1 / (data.display_scale ?? 1.0);
   return {
     filename,
     predictions: data.detections.map((d) => ({
       box: [
-        d.box[0] / s,
-        d.box[1] / s,
-        d.box[2] / s,
-        d.box[3] / s,
+        d.box[0] * factor,
+        d.box[1] * factor,
+        d.box[2] * factor,
+        d.box[3] * factor,
       ] as [number, number, number, number],
       confidence: d.confidence,
       class: d.class_name,
     })),
-    imageWidth: data.image_size.width,
-    imageHeight: data.image_size.height,
+    // dimensions الصورة الـ original (قبل أي resize في الـ backend)
+    imageWidth:  Math.round(data.image_size.width  * factor),
+    imageHeight: Math.round(data.image_size.height * factor),
+    sessionId: data.session_id ?? undefined,
   };
+}
+
+// ── Start new inspection — يحذف الداتا القديمة من MongoDB ويرجع session_id ──
+export async function startNewInspection(): Promise<string | null> {
+  try {
+    const response = await fetch(`${API_BASE_URL}/inspection/new`, {
+      method: "POST",
+    });
+    if (!response.ok) return null;
+    const data = await response.json();
+    return data.session_id ?? null;
+  } catch {
+    return null;
+  }
 }
 
 // ── Detect cracks with retry ──
