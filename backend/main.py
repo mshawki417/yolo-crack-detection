@@ -175,10 +175,10 @@ MAGIC_BYTES: dict[bytes, str] = {
 }
 
 # Inference parameters
-CROP_SIZE     = 256   # crop window from the original image
+CROP_SIZE     = 640   # crop window from the original image
 PATCH_SIZE    = 640   # model input size (must be 640x640)
-OVERLAP       = 64    # overlap between crops
-MAX_INPUT_DIM = 4000  # max dimension before downscaling
+OVERLAP       = 128   # overlap between crops
+MAX_INPUT_DIM = 1280  # downscale massive images for real-time speed
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
 
 # =====================================
@@ -274,7 +274,17 @@ def postprocess_patch(
         if x2 <= x1 or y2 <= y1:
             continue
 
-        boxes_xywh.append([x1, y1, x2 - x1, y2 - y1])
+        # Area filtering to remove false positives (huge background walls)
+        box_w = x2 - x1
+        box_h = y2 - y1
+        area  = box_w * box_h
+        patch_area = patch_h * patch_w
+        
+        # Ignore extremely small noise or boxes taking >25% of the patch
+        if area < 200 or area > (patch_area * 0.25):
+            continue
+
+        boxes_xywh.append([x1, y1, box_w, box_h])
         scores_list.append(confidence)
         class_ids_list.append(class_id)
 
@@ -446,14 +456,15 @@ async def predict(
                 all_class_ids.extend(p_class_ids)
                 del tensor, outputs, patch
 
-        # Global NMS
+        # Global NMS with higher IOU threshold to reduce overlapping boxes
         boxes, scores, class_ids = [], [], []
         if all_boxes:
-            nms_in = [[b[0], b[1], b[2]-b[0], b[3]-b[1]] for b in all_boxes]
-            indices = cv2.dnn.NMSBoxes(nms_in, all_scores, confidence, iou)
+            nms_in = [[b[0], b[1], b[2], b[3]] for b in all_boxes]
+            indices = cv2.dnn.NMSBoxes(nms_in, all_scores, confidence, max(iou, 0.6))
             if len(indices) > 0:
                 for i in indices.flatten():
-                    boxes.append(all_boxes[i])
+                    x, y, w, h = all_boxes[i]
+                    boxes.append([x, y, x+w, y+h])  # convert back to x1,y1,x2,y2
                     scores.append(all_scores[i])
                     class_ids.append(all_class_ids[i])
         del all_boxes, all_scores, all_class_ids
