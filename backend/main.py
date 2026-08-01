@@ -186,7 +186,7 @@ MAGIC_BYTES: dict[bytes, str] = {
 PATCH_SIZE    = 640   # model input size — ثابت 640×640
 CROP_SIZE     = 640   # crop window = نفس الـ patch size
 OVERLAP       = 64    # overlap صغير
-MAX_INPUT_DIM = 640   # مهم: resize لـ 640 MAX → patch واحد بس = أقل RAM
+MAX_INPUT_DIM = 800   # توازن بين الدقة والـ RAM — يعمل ~2 patches على الصور الكبيرة
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
 
 # يمنع أكتر من inference في نفس الوقت (لو requests جت مع بعض تعدت 512MB)
@@ -297,8 +297,8 @@ def postprocess_patch(
         if area < 80:
             continue
 
-        # 2. الـ box بتاخد أكتر من 60% من الـ patch → مش crack، ده background/structure
-        if area > (patch_area * 0.60):
+        # 2. الـ box بتاخد أكتر من 80% من الـ patch → مش crack
+        if area > (patch_area * 0.80):
             continue
 
         # 3. aspect ratio للـ cracks الكبيرة فقط
@@ -312,16 +312,16 @@ def postprocess_patch(
         if box_w < 5 or box_h < 5:
             continue
 
-        # 5. Structural edge filter — يفرق بين crack وحواف البناء المنتظمة
-        #    الـ crack: pixels داكنة موزعة غير منتظمة داخل الـ box
-        #    الـ door frame/beam: pixel عدد قليل على الحافة بس (line واحدة)
+        # 5. Structural edge filter — يرفض الـ boxes الفاضية من أي edge
+        #    الـ crack: فيها gradient قوي (حافة داكنة على خلفية فاتحة)
         roi = patch_bgr_ref[y1:y2, x1:x2] if patch_bgr_ref is not None else None
         if roi is not None and roi.size > 0:
             gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-            # pixels داكنة (< 80) كنسبة من الـ box
-            dark_ratio = np.sum(gray < 80) / (gray.size + 1e-6)
-            # لو الـ box فاضية تقريباً من pixels داكنة → مش crack
-            if dark_ratio < 0.01:
+            # Sobel edges — الـ crack دايماً فيها edge قوي
+            edges = cv2.Sobel(gray, cv2.CV_64F, 1, 1, ksize=3)
+            edge_density = np.sum(np.abs(edges) > 30) / (gray.size + 1e-6)
+            # لو مفيش edge خالص → noise أو background فاضي
+            if edge_density < 0.005:
                 continue
 
         boxes_xywh.append([x1, y1, box_w, box_h])
