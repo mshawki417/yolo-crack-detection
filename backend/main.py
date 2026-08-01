@@ -247,7 +247,8 @@ def preprocess_patch(patch_bgr: np.ndarray, imgsz: int):
 def postprocess_patch(
     outputs, patch_h, patch_w,
     conf_thresh, iou_thresh,
-    scale, pad_w, pad_h
+    scale, pad_w, pad_h,
+    patch_bgr_ref=None   # الصورة الأصلية للـ dark pixel filter
 ):
     """
     Decode YOLOv11 ONNX output.
@@ -291,15 +292,37 @@ def postprocess_patch(
         patch_area = patch_h * patch_w
 
         # ── فلتر الـ boxes الغلط ──
-        # 1. صغير جداً (ضوضاء) أو كبير جداً (خلفية مش crack)
-        if area < 100 or area > (patch_area * 0.15):
+
+        # 1. ضوضاء صغيرة جداً
+        if area < 80:
             continue
 
-        # 2. aspect ratio: الـ crack دايماً مستطيلة ممدودة
-        #    لو width ≈ height (مربع) → على الأرجح مش crack
-        aspect = max(box_w, box_h) / (min(box_w, box_h) + 1e-6)
-        if aspect < 1.5:
+        # 2. الـ box بتاخد أكتر من 60% من الـ patch → مش crack، ده background/structure
+        if area > (patch_area * 0.60):
             continue
+
+        # 3. aspect ratio للـ cracks الكبيرة فقط
+        #    الـ crack الرأسية/الأفقية دايماً ممدودة — لكن مش شرط جداً
+        #    نشترط aspect >= 1.2 بس (مش 1.5) عشان الـ diagonal cracks برضو تعدي
+        aspect = max(box_w, box_h) / (min(box_w, box_h) + 1e-6)
+        if aspect < 1.2:
+            continue
+
+        # 4. عرض وارتفاع minimum معقول
+        if box_w < 5 or box_h < 5:
+            continue
+
+        # 5. Structural edge filter — يفرق بين crack وحواف البناء المنتظمة
+        #    الـ crack: pixels داكنة موزعة غير منتظمة داخل الـ box
+        #    الـ door frame/beam: pixel عدد قليل على الحافة بس (line واحدة)
+        roi = patch_bgr_ref[y1:y2, x1:x2] if patch_bgr_ref is not None else None
+        if roi is not None and roi.size > 0:
+            gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+            # pixels داكنة (< 80) كنسبة من الـ box
+            dark_ratio = np.sum(gray < 80) / (gray.size + 1e-6)
+            # لو الـ box فاضية تقريباً من pixels داكنة → مش crack
+            if dark_ratio < 0.01:
+                continue
 
         boxes_xywh.append([x1, y1, box_w, box_h])
         scores_list.append(confidence)
@@ -391,7 +414,7 @@ def get_stats():
 @app.post("/predict")
 async def predict(
     file:       UploadFile = File(...),
-    confidence: float      = Form(0.40, ge=0.0, le=1.0),  # رفعنا من 0.25 → 0.40
+    confidence: float      = Form(0.25, ge=0.0, le=1.0),  # رجعنا 0.25 — الموديل محتاج confidence منخفض للـ cracks
     iou:        float      = Form(0.45, ge=0.0, le=1.0),
 ):
     if session is None:
@@ -458,7 +481,8 @@ async def predict(
                 outputs = session.run(None, {input_name: tensor})
                 p_boxes, p_scores, p_class_ids = postprocess_patch(
                     outputs, patch.shape[0], patch.shape[1],
-                    confidence, iou, scale, pad_w, pad_h
+                    confidence, iou, scale, pad_w, pad_h,
+                    patch_bgr_ref=patch
                 )
                 for box in p_boxes:
                     box[0] += x1; box[1] += y1
