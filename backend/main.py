@@ -412,18 +412,21 @@ async def predict(
 
     original_h, original_w = image.shape[:2]
 
-    # ── Resize لو الصورة كبيرة جداً ──
-    display_scale = 1.0
+    # ── Resize لو الصورة كبيرة جداً (للـ inference بس) ──
+    # بنعمل resize للسرعة، وبعدين بنرجع الـ boxes للـ original coordinates
+    proc_scale = 1.0
     if max(original_h, original_w) > MAX_INPUT_DIM:
-        display_scale = MAX_INPUT_DIM / max(original_h, original_w)
+        proc_scale = MAX_INPUT_DIM / max(original_h, original_w)
         image = cv2.resize(
             image, None,
-            fx=display_scale, fy=display_scale,
+            fx=proc_scale, fy=proc_scale,
             interpolation=cv2.INTER_AREA
         )
 
     start_time = time.time()
     proc_h, proc_w = image.shape[:2]
+    # proc_scale: نسبة الـ resize من الـ original → processed
+    # بنضربها في الـ boxes في الآخر عشان نرجع للـ original coordinates
 
     try:
         # ── Sliding Window inference ──
@@ -468,6 +471,16 @@ async def predict(
                     scores.append(all_scores[i])
                     class_ids.append(all_class_ids[i])
         del all_boxes, all_scores, all_class_ids
+
+        # ── Scale boxes back to original image coordinates ──
+        # الـ boxes دلوقتي بالنسبة للـ processed image (المصغّرة)
+        # بنقسم على proc_scale عشان نرجعهم للـ original
+        if proc_scale != 1.0:
+            inv = 1.0 / proc_scale
+            boxes = [
+                [int(b[0]*inv), int(b[1]*inv), int(b[2]*inv), int(b[3]*inv)]
+                for b in boxes
+            ]
 
         logger.info(f"Sliding window done: {len(boxes)} detections")
 
@@ -517,13 +530,14 @@ async def predict(
             logger.error(f"MongoDB save error: {e}")
             # مش بيوقف الـ response
 
-    # FIX: الـ frontend بيقرأ display_scale مش scale_factor
+    # الـ boxes دلوقتي في الـ original image coordinates مباشرةً
+    # display_scale = 1.0 دايماً — الـ frontend مش محتاج يعمل أي scaling
     return {
         "detections":    detections,
         "count":         len(detections),
         "max_severity":  max_severity,
         "image_size":    {"width": original_w, "height": original_h},
-        "display_scale": display_scale,
+        "display_scale": 1.0,
         "memory_mb":     memory_usage(),
     }
 
