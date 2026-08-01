@@ -15,7 +15,6 @@ from pathlib import Path
 from datetime import datetime, timezone
 from pymongo import MongoClient
 from pymongo.errors import PyMongoError
-import certifi
 
 # =====================================
 # Logging
@@ -26,7 +25,7 @@ logger = logging.getLogger(__name__)
 # =====================================
 # App
 # =====================================
-app = FastAPI(title="YOLO Crack Detection API", version="4.1")
+app = FastAPI(title="YOLO Crack Detection API", version="4.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -68,8 +67,6 @@ if MONGO_URL:
     try:
         db_client = MongoClient(
             MONGO_URL,
-            tls=True,
-            tlsCAFile=certifi.where(),
             serverSelectionTimeoutMS=5000,
             connectTimeoutMS=5000,
             socketTimeoutMS=10000,
@@ -116,7 +113,7 @@ if not MODEL_PATH.exists():
         raise RuntimeError(str(e))
 
 # =====================================
-# Load ONNX Session Once — Memory-optimized for Render 512 MB
+# Load ONNX Session Once
 # =====================================
 session     = None
 input_name  = None
@@ -128,11 +125,6 @@ try:
     opts.intra_op_num_threads = 1
     opts.inter_op_num_threads = 1
 
-    # ── Memory optimizations for Render free-tier (512 MB RAM) ──
-    opts.enable_mem_pattern = True
-    opts.enable_mem_reuse   = True
-    opts.enable_cpu_mem_arena = False   # تقليل الـ RAM: بدل ما يحجز arena كبير
-
     session = ort.InferenceSession(
         str(MODEL_PATH),
         sess_options=opts,
@@ -142,17 +134,13 @@ try:
     model_imgsz = session.get_inputs()[0].shape[2]
     logger.info(f"ONNX model loaded — input: {model_imgsz}x{model_imgsz}")
 
-    # ── تنظيف بعد التحميل ──
-    gc.collect()
-    logger.info(f"Memory after model load: {round(psutil.Process(os.getpid()).memory_info().rss / 1024 / 1024, 1)} MB")
-
 except Exception as e:
     logger.error(f"ONNX LOAD ERROR: {e}")
 
 # =====================================
 # Config — ثابت بغض النظر عن الموديل
 # =====================================
-CLASS_NAMES = {0: "crack"}  # Model has 1 class only
+CLASS_NAMES = {0: "crack", 1: "no-crack"}
 
 SEVERITY_THRESHOLDS = {
     "Critical": 0.9,
@@ -174,11 +162,9 @@ MAGIC_BYTES: dict[bytes, str] = {
     b'MM\x00*':      "tiff",
 }
 
-# Inference parameters
-CROP_SIZE     = 640   # crop window from the original image
-PATCH_SIZE    = 640   # model input size (must be 640x640)
-OVERLAP       = 128   # overlap between crops
-MAX_INPUT_DIM = 1280  # downscale massive images for real-time speed
+PATCH_SIZE    = 256    # ثابت — الموديل اتدرب على 256×256
+OVERLAP       = 64     # 25% overlap
+MAX_INPUT_DIM = 1024   # resize الصورة الكبيرة قبل الـ tiling
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
 
 # =====================================
@@ -238,20 +224,15 @@ def postprocess_patch(
     conf_thresh, iou_thresh,
     scale, pad_w, pad_h
 ):
-    """
-    Decode YOLOv11 ONNX output.
-    Output shape: [1, 5, 8400]  ->  5 = 4 box coords + 1 class score (crack)
-    """
-    raw = outputs[0][0]   # shape [5, 8400]
-    if raw.shape[0] < raw.shape[1]:
-        raw = raw.T       # [8400, 5]
+    preds = outputs[0][0].T  # [num_anchors, 4+num_classes]
 
     boxes_xywh, scores_list, class_ids_list = [], [], []
 
-    for pred in raw:
-        cx, cy, w, h = pred[:4]
-        confidence   = float(pred[4])   # single-class score
-        class_id     = 0                # only class: crack
+    for pred in preds:
+        cx, cy, w, h   = pred[:4]
+        class_scores   = pred[4:]
+        class_id       = int(np.argmax(class_scores))
+        confidence     = float(class_scores[class_id])
 
         if confidence < conf_thresh:
             continue
@@ -274,17 +255,7 @@ def postprocess_patch(
         if x2 <= x1 or y2 <= y1:
             continue
 
-        # Area filtering to remove false positives (huge background walls)
-        box_w = x2 - x1
-        box_h = y2 - y1
-        area  = box_w * box_h
-        patch_area = patch_h * patch_w
-        
-        # Ignore extremely small noise or boxes taking >25% of the patch
-        if area < 200 or area > (patch_area * 0.25):
-            continue
-
-        boxes_xywh.append([x1, y1, box_w, box_h])
+        boxes_xywh.append([x1, y1, x2 - x1, y2 - y1])
         scores_list.append(confidence)
         class_ids_list.append(class_id)
 
@@ -301,7 +272,73 @@ def postprocess_patch(
     return final_boxes, final_scores, final_class_ids
 
 
+def run_tiled_inference(image, conf_thresh, iou_thresh):
+    orig_h, orig_w = image.shape[:2]
+    stride = PATCH_SIZE - OVERLAP
 
+    all_boxes, all_scores, all_class_ids = [], [], []
+
+    for y in range(0, orig_h, stride):
+        for x in range(0, orig_w, stride):
+            x2_patch = min(x + PATCH_SIZE, orig_w)
+            y2_patch = min(y + PATCH_SIZE, orig_h)
+            x1_patch = max(0, x2_patch - PATCH_SIZE)
+            y1_patch = max(0, y2_patch - PATCH_SIZE)
+
+            patch    = image[y1_patch:y2_patch, x1_patch:x2_patch]
+            ph, pw   = patch.shape[:2]
+
+            # padding لو الـ patch أصغر
+            if ph < PATCH_SIZE or pw < PATCH_SIZE:
+                padded_patch = np.zeros(
+                    (PATCH_SIZE, PATCH_SIZE, 3), dtype=np.uint8
+                )
+                padded_patch[:] = 114
+                padded_patch[:ph, :pw] = patch
+                patch  = padded_patch
+                ph, pw = PATCH_SIZE, PATCH_SIZE
+
+            tensor, scale, (pad_w, pad_h) = preprocess_patch(patch, PATCH_SIZE)
+            outputs = session.run(None, {input_name: tensor})
+            boxes, scores, class_ids = postprocess_patch(
+                outputs, ph, pw,
+                conf_thresh, iou_thresh,
+                scale, pad_w, pad_h
+            )
+
+            for box in boxes:
+                bx1 = max(0, min(orig_w, box[0] + x1_patch))
+                by1 = max(0, min(orig_h, box[1] + y1_patch))
+                bx2 = max(0, min(orig_w, box[2] + x1_patch))
+                by2 = max(0, min(orig_h, box[3] + y1_patch))
+                if bx2 > bx1 and by2 > by1:
+                    all_boxes.append([bx1, by1, bx2, by2])
+
+            all_scores.extend(scores)
+            all_class_ids.extend(class_ids)
+
+            del tensor, outputs, patch
+
+    # تنظيف مرة واحدة بعد الـ loop
+    gc.collect()
+
+    # NMS شاملة
+    final_boxes, final_scores, final_class_ids = [], [], []
+    if all_boxes:
+        boxes_xywh = [
+            [b[0], b[1], b[2] - b[0], b[3] - b[1]]
+            for b in all_boxes
+        ]
+        indices = cv2.dnn.NMSBoxes(
+            boxes_xywh, all_scores, conf_thresh, iou_thresh
+        )
+        if len(indices) > 0:
+            for i in indices.flatten():
+                final_boxes.append(all_boxes[i])
+                final_scores.append(round(all_scores[i], 4))
+                final_class_ids.append(all_class_ids[i])
+
+    return final_boxes, final_scores, final_class_ids
 
 # =====================================
 # Routes
@@ -396,7 +433,7 @@ async def predict(
     contents = await file.read()
 
     if len(contents) > MAX_FILE_SIZE:
-        raise HTTPException(status_code=413, detail="File too large (max 5 MB)")
+        raise HTTPException(status_code=413, detail="File too large (max 10 MB)")
 
     # ── تحقق من الـ magic bytes الفعلية ──
     if not verify_image_magic(contents):
@@ -404,78 +441,40 @@ async def predict(
 
     nparr = np.frombuffer(contents, np.uint8)
     image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-    del contents, nparr  # ← تنظيف مبكر لتوفير RAM
-    gc.collect()
-
     if image is None:
         raise HTTPException(status_code=400, detail="Cannot decode image")
 
     original_h, original_w = image.shape[:2]
 
     # ── Resize لو الصورة كبيرة جداً ──
-    display_scale = 1.0
     if max(original_h, original_w) > MAX_INPUT_DIM:
-        display_scale = MAX_INPUT_DIM / max(original_h, original_w)
+        scale_down = MAX_INPUT_DIM / max(original_h, original_w)
         image = cv2.resize(
             image, None,
-            fx=display_scale, fy=display_scale,
+            fx=scale_down, fy=scale_down,
             interpolation=cv2.INTER_AREA
         )
 
     start_time = time.time()
-    proc_h, proc_w = image.shape[:2]
 
     try:
-        # ── Sliding Window inference ──
-        # Crop CROP_SIZE windows from original image (preserve crack detail),
-        # letterbox each crop to PATCH_SIZE (640) before inference.
-        stride = CROP_SIZE - OVERLAP
-        all_boxes, all_scores, all_class_ids = [], [], []
-
-        for y in range(0, proc_h, stride):
-            for x in range(0, proc_w, stride):
-                y2 = min(y + CROP_SIZE, proc_h)
-                x2 = min(x + CROP_SIZE, proc_w)
-                y1 = max(0, y2 - CROP_SIZE)
-                x1 = max(0, x2 - CROP_SIZE)
-
-                patch = image[y1:y2, x1:x2]
-                # Letterbox crop → 640×640 for inference
-                tensor, scale, (pad_w, pad_h) = preprocess_patch(patch, PATCH_SIZE)
-                outputs = session.run(None, {input_name: tensor})
-                p_boxes, p_scores, p_class_ids = postprocess_patch(
-                    outputs, patch.shape[0], patch.shape[1],
-                    confidence, iou, scale, pad_w, pad_h
-                )
-                # Remap to full image coords
-                for box in p_boxes:
-                    box[0] += x1; box[1] += y1
-                    box[2] += x1; box[3] += y1
-                all_boxes.extend(p_boxes)
-                all_scores.extend(p_scores)
-                all_class_ids.extend(p_class_ids)
-                del tensor, outputs, patch
-
-        # Global NMS with higher IOU threshold to reduce overlapping boxes
-        boxes, scores, class_ids = [], [], []
-        if all_boxes:
-            nms_in = [[b[0], b[1], b[2], b[3]] for b in all_boxes]
-            indices = cv2.dnn.NMSBoxes(nms_in, all_scores, confidence, max(iou, 0.6))
-            if len(indices) > 0:
-                for i in indices.flatten():
-                    x, y, w, h = all_boxes[i]
-                    boxes.append([x, y, x+w, y+h])  # convert back to x1,y1,x2,y2
-                    scores.append(all_scores[i])
-                    class_ids.append(all_class_ids[i])
-        del all_boxes, all_scores, all_class_ids
-
-        logger.info(f"Sliding window done: {len(boxes)} detections")
-
+        if max(original_h, original_w) <= PATCH_SIZE:
+            tensor, scale, (pad_w, pad_h) = preprocess_patch(image, PATCH_SIZE)
+            outputs = session.run(None, {input_name: tensor})
+            boxes, scores, class_ids = postprocess_patch(
+                outputs, original_h, original_w,
+                confidence, iou, scale, pad_w, pad_h
+            )
+            del tensor, outputs
+        else:
+            boxes, scores, class_ids = run_tiled_inference(
+                image, confidence, iou
+            )
     except Exception as e:
         logger.error(f"Inference error: {e}")
         raise HTTPException(status_code=500, detail="Inference failed. Please try again.")
     finally:
-        del image
+        del image, nparr, contents
         gc.collect()
 
     processing_ms = round((time.time() - start_time) * 1000)
@@ -517,14 +516,13 @@ async def predict(
             logger.error(f"MongoDB save error: {e}")
             # مش بيوقف الـ response
 
-    # FIX: الـ frontend بيقرأ display_scale مش scale_factor
     return {
-        "detections":    detections,
-        "count":         len(detections),
-        "max_severity":  max_severity,
-        "image_size":    {"width": original_w, "height": original_h},
-        "display_scale": display_scale,
-        "memory_mb":     memory_usage(),
+        "detections":   detections,
+        "count":        len(detections),
+        "max_severity": max_severity,
+        "image_size":   {"width": original_w, "height": original_h},
+        "scale_factor": 1.0,
+        "memory_mb":    memory_usage(),
     }
 
 # =====================================
