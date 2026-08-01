@@ -184,9 +184,8 @@ MAGIC_BYTES: dict[bytes, str] = {
 
 # Inference parameters
 PATCH_SIZE    = 640   # model input size — ثابت 640×640
-CROP_SIZE     = 640   # crop window = نفس الـ patch size
-OVERLAP       = 64    # overlap صغير
-MAX_INPUT_DIM = 800   # توازن بين الدقة والـ RAM — يعمل ~2 patches على الصور الكبيرة
+CROP_SIZE     = 256   # crop window = نفس الـ patch size
+MAX_INPUT_DIM = 2048   # توازن بين الدقة والـ RAM — يعمل ~2 patches على الصور الكبيرة
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
 
 # يمنع أكتر من inference في نفس الوقت (لو requests جت مع بعض تعدت 512MB)
