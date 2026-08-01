@@ -12,6 +12,7 @@ import psutil
 import logging
 import time
 from pathlib import Path
+import threading
 from datetime import datetime, timezone
 from pymongo import MongoClient
 from pymongo.errors import PyMongoError
@@ -87,6 +88,12 @@ if MONGO_URL:
 # =====================================
 # Model Setup
 # =====================================
+# تقليل RAM للـ threading libraries قبل أي import للـ model
+os.environ.setdefault("OMP_NUM_THREADS",      "1")
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS",      "1")
+os.environ.setdefault("NUMEXPR_NUM_THREADS",  "1")
+
 MODEL_DIR  = Path("model")
 MODEL_NAME = "sdnet2018_crack_detect_yolov11m_best.onnx"
 MODEL_PATH = MODEL_DIR / MODEL_NAME
@@ -124,14 +131,15 @@ model_imgsz = 640
 
 try:
     opts = ort.SessionOptions()
-    opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+    opts.graph_optimization_level  = ort.GraphOptimizationLevel.ORT_ENABLE_BASIC
     opts.intra_op_num_threads = 1
     opts.inter_op_num_threads = 1
 
     # ── Memory optimizations for Render free-tier (512 MB RAM) ──
-    opts.enable_mem_pattern = True
+    opts.enable_mem_pattern        = False   # يوفر RAM على حساب سرعة بسيطة
     opts.enable_mem_reuse   = True
-    opts.enable_cpu_mem_arena = False   # تقليل الـ RAM: بدل ما يحجز arena كبير
+    opts.enable_cpu_mem_arena      = False
+    opts.execution_mode            = ort.ExecutionMode.ORT_SEQUENTIAL
 
     session = ort.InferenceSession(
         str(MODEL_PATH),
@@ -177,9 +185,12 @@ MAGIC_BYTES: dict[bytes, str] = {
 # Inference parameters
 PATCH_SIZE    = 640   # model input size — ثابت 640×640
 CROP_SIZE     = 640   # crop window = نفس الـ patch size
-OVERLAP       = 64    # overlap صغير — يكفي لمنع miss على الحواف
-MAX_INPUT_DIM = 960   # downscale قبل الـ tiling (أسرع + أقل patches)
+OVERLAP       = 64    # overlap صغير
+MAX_INPUT_DIM = 640   # مهم: resize لـ 640 MAX → patch واحد بس = أقل RAM
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
+
+# يمنع أكتر من inference في نفس الوقت (لو requests جت مع بعض تعدت 512MB)
+_inference_lock = threading.Semaphore(1)
 
 # =====================================
 # Helpers
@@ -236,7 +247,8 @@ def preprocess_patch(patch_bgr: np.ndarray, imgsz: int):
 def postprocess_patch(
     outputs, patch_h, patch_w,
     conf_thresh, iou_thresh,
-    scale, pad_w, pad_h
+    scale, pad_w, pad_h,
+    patch_bgr_ref=None   # الصورة الأصلية للـ dark pixel filter
 ):
     """
     Decode YOLOv11 ONNX output.
@@ -280,15 +292,37 @@ def postprocess_patch(
         patch_area = patch_h * patch_w
 
         # ── فلتر الـ boxes الغلط ──
-        # 1. صغير جداً (ضوضاء) أو كبير جداً (خلفية مش crack)
-        if area < 100 or area > (patch_area * 0.15):
+
+        # 1. ضوضاء صغيرة جداً
+        if area < 80:
             continue
 
-        # 2. aspect ratio: الـ crack دايماً مستطيلة ممدودة
-        #    لو width ≈ height (مربع) → على الأرجح مش crack
-        aspect = max(box_w, box_h) / (min(box_w, box_h) + 1e-6)
-        if aspect < 1.5:
+        # 2. الـ box بتاخد أكتر من 60% من الـ patch → مش crack، ده background/structure
+        if area > (patch_area * 0.60):
             continue
+
+        # 3. aspect ratio للـ cracks الكبيرة فقط
+        #    الـ crack الرأسية/الأفقية دايماً ممدودة — لكن مش شرط جداً
+        #    نشترط aspect >= 1.2 بس (مش 1.5) عشان الـ diagonal cracks برضو تعدي
+        aspect = max(box_w, box_h) / (min(box_w, box_h) + 1e-6)
+        if aspect < 1.2:
+            continue
+
+        # 4. عرض وارتفاع minimum معقول
+        if box_w < 5 or box_h < 5:
+            continue
+
+        # 5. Structural edge filter — يفرق بين crack وحواف البناء المنتظمة
+        #    الـ crack: pixels داكنة موزعة غير منتظمة داخل الـ box
+        #    الـ door frame/beam: pixel عدد قليل على الحافة بس (line واحدة)
+        roi = patch_bgr_ref[y1:y2, x1:x2] if patch_bgr_ref is not None else None
+        if roi is not None and roi.size > 0:
+            gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+            # pixels داكنة (< 80) كنسبة من الـ box
+            dark_ratio = np.sum(gray < 80) / (gray.size + 1e-6)
+            # لو الـ box فاضية تقريباً من pixels داكنة → مش crack
+            if dark_ratio < 0.01:
+                continue
 
         boxes_xywh.append([x1, y1, box_w, box_h])
         scores_list.append(confidence)
@@ -380,7 +414,7 @@ def get_stats():
 @app.post("/predict")
 async def predict(
     file:       UploadFile = File(...),
-    confidence: float      = Form(0.40, ge=0.0, le=1.0),  # رفعنا من 0.25 → 0.40
+    confidence: float      = Form(0.25, ge=0.0, le=1.0),  # رجعنا 0.25 — الموديل محتاج confidence منخفض للـ cracks
     iou:        float      = Form(0.45, ge=0.0, le=1.0),
 ):
     if session is None:
@@ -426,10 +460,12 @@ async def predict(
     start_time = time.time()
     proc_h, proc_w = image.shape[:2]
 
+    # ── Semaphore: منع أكتر من inference في نفس الوقت ──
+    if not _inference_lock.acquire(blocking=False):
+        raise HTTPException(status_code=429, detail="Server busy. Please try again in a moment.")
+
     try:
         # ── Sliding Window inference ──
-        # Crop CROP_SIZE windows from original image (preserve crack detail),
-        # letterbox each crop to PATCH_SIZE (640) before inference.
         stride = CROP_SIZE - OVERLAP
         all_boxes, all_scores, all_class_ids = [], [], []
 
@@ -441,14 +477,13 @@ async def predict(
                 x1 = max(0, x2 - CROP_SIZE)
 
                 patch = image[y1:y2, x1:x2]
-                # Letterbox crop → 640×640 for inference
                 tensor, scale, (pad_w, pad_h) = preprocess_patch(patch, PATCH_SIZE)
                 outputs = session.run(None, {input_name: tensor})
                 p_boxes, p_scores, p_class_ids = postprocess_patch(
                     outputs, patch.shape[0], patch.shape[1],
-                    confidence, iou, scale, pad_w, pad_h
+                    confidence, iou, scale, pad_w, pad_h,
+                    patch_bgr_ref=patch
                 )
-                # Remap to full image coords
                 for box in p_boxes:
                     box[0] += x1; box[1] += y1
                     box[2] += x1; box[3] += y1
@@ -456,16 +491,15 @@ async def predict(
                 all_scores.extend(p_scores)
                 all_class_ids.extend(p_class_ids)
                 del tensor, outputs, patch
+                gc.collect()  # تنظيف بعد كل patch
 
         # Global NMS — مرة واحدة بعد كل الـ patches
         boxes, scores, class_ids = [], [], []
         if all_boxes:
-            # all_boxes هنا x1,y1,x2,y2 — نحولها لـ x,y,w,h للـ NMS
             nms_in = [
                 [b[0], b[1], b[2] - b[0], b[3] - b[1]]
                 for b in all_boxes
             ]
-            # IOU=0.3 صارم → يحذف الـ duplicates بقوة
             indices = cv2.dnn.NMSBoxes(nms_in, all_scores, confidence, 0.3)
             if len(indices) > 0:
                 for i in indices.flatten():
@@ -476,10 +510,13 @@ async def predict(
 
         logger.info(f"Sliding window done: {len(boxes)} detections")
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Inference error: {e}")
         raise HTTPException(status_code=500, detail="Inference failed. Please try again.")
     finally:
+        _inference_lock.release()
         del image
         gc.collect()
 
