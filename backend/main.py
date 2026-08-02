@@ -175,9 +175,9 @@ MAGIC_BYTES: dict[bytes, str] = {
 }
 
 # Inference parameters
-CROP_SIZE     = 640   # crop window from the original image
+CROP_SIZE     = 256   # ✂️ Reduced crop size for tighter bounding boxes
 PATCH_SIZE    = 640   # model input size (must be 640x640)
-OVERLAP       = 128   # overlap between crops
+OVERLAP       = 128   # 🔄 Overlap between crops
 MAX_INPUT_DIM = 1280  # downscale massive images for real-time speed
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
 
@@ -222,7 +222,7 @@ def preprocess_patch(patch_bgr: np.ndarray, imgsz: int):
 
     padded = cv2.copyMakeBorder(
         resized, top, bottom, left, right,
-        cv2.BORDER_CONSTANT, value=(114, 114, 114)
+        cv2.BORDER_REPLICATE
     )
 
     img = cv2.cvtColor(padded, cv2.COLOR_BGR2RGB)
@@ -280,8 +280,8 @@ def postprocess_patch(
         area  = box_w * box_h
         patch_area = patch_h * patch_w
         
-        # Ignore extremely small noise or boxes taking >85% of the patch
-        if area < 50 or area > (patch_area * 0.85):
+        # Ignore extremely small noise or boxes taking >40% of the patch
+        if area < 50 or area > (patch_area * 0.40):
             continue
 
         boxes_xywh.append([x1, y1, box_w, box_h])
@@ -301,7 +301,7 @@ def postprocess_patch(
     return final_boxes, final_scores, final_class_ids
 
 
-def merge_boxes(boxes, scores, class_ids, distance_threshold=150):
+def merge_boxes(boxes, scores, class_ids, distance_threshold=40):
     if not boxes: return [], [], []
     merged_boxes, merged_scores, merged_class_ids = [], [], []
     used = [False] * len(boxes)
@@ -499,13 +499,18 @@ async def predict(
             if len(indices) > 0:
                 for i in indices.flatten():
                     x, y, w, h = all_boxes[i]
-                    nms_boxes.append([x, y, x+w, y+h])  # convert back to x1,y1,x2,y2
-                    nms_scores.append(all_scores[i])
-                    nms_class_ids.append(all_class_ids[i])
+                    x1 = max(0, int(x))
+                    y1 = max(0, int(y))
+                    x2 = min(proc_w, int(x + w))
+                    y2 = min(proc_h, int(y + h))
+                    if x2 > x1 and y2 > y1:
+                        nms_boxes.append([x1, y1, x2, y2])
+                        nms_scores.append(all_scores[i])
+                        nms_class_ids.append(all_class_ids[i])
         del all_boxes, all_scores, all_class_ids
 
         # Merge adjacent boxes to form continuous cracks
-        boxes, scores, class_ids = merge_boxes(nms_boxes, nms_scores, nms_class_ids, distance_threshold=150)
+        boxes, scores, class_ids = nms_boxes, nms_scores, nms_class_ids # merge_boxes(nms_boxes, nms_scores, nms_class_ids, distance_threshold=40)
 
         logger.info(f"Sliding window done: {len(boxes)} detections after merging")
 
