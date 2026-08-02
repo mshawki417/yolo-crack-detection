@@ -280,8 +280,8 @@ def postprocess_patch(
         area  = box_w * box_h
         patch_area = patch_h * patch_w
         
-        # Ignore extremely small noise or boxes taking >25% of the patch
-        if area < 200 or area > (patch_area * 0.25):
+        # Ignore extremely small noise or boxes taking >85% of the patch
+        if area < 50 or area > (patch_area * 0.85):
             continue
 
         boxes_xywh.append([x1, y1, box_w, box_h])
@@ -299,6 +299,41 @@ def postprocess_patch(
                 final_class_ids.append(class_ids_list[i])
 
     return final_boxes, final_scores, final_class_ids
+
+
+def merge_boxes(boxes, scores, class_ids, distance_threshold=150):
+    if not boxes: return [], [], []
+    merged_boxes, merged_scores, merged_class_ids = [], [], []
+    used = [False] * len(boxes)
+    for i in range(len(boxes)):
+        if used[i]: continue
+        cluster = [i]
+        used[i] = True
+        added = True
+        while added:
+            added = False
+            cx1 = min(boxes[k][0] for k in cluster)
+            cy1 = min(boxes[k][1] for k in cluster)
+            cx2 = max(boxes[k][2] for k in cluster)
+            cy2 = max(boxes[k][3] for k in cluster)
+            for j in range(len(boxes)):
+                if used[j]: continue
+                bx1, by1, bx2, by2 = boxes[j]
+                dx = max(0, max(cx1 - bx2, bx1 - cx2))
+                dy = max(0, max(cy1 - by2, by1 - cy2))
+                if dx <= distance_threshold and dy <= distance_threshold:
+                    cluster.append(j)
+                    used[j] = True
+                    added = True
+        mx1 = min(boxes[k][0] for k in cluster)
+        my1 = min(boxes[k][1] for k in cluster)
+        mx2 = max(boxes[k][2] for k in cluster)
+        my2 = max(boxes[k][3] for k in cluster)
+        avg_score = sum(scores[k] for k in cluster) / len(cluster)
+        merged_boxes.append([mx1, my1, mx2, my2])
+        merged_scores.append(avg_score)
+        merged_class_ids.append(class_ids[cluster[0]])
+    return merged_boxes, merged_scores, merged_class_ids
 
 
 
@@ -457,19 +492,22 @@ async def predict(
                 del tensor, outputs, patch
 
         # Global NMS with higher IOU threshold to reduce overlapping boxes
-        boxes, scores, class_ids = [], [], []
+        nms_boxes, nms_scores, nms_class_ids = [], [], []
         if all_boxes:
             nms_in = [[b[0], b[1], b[2], b[3]] for b in all_boxes]
             indices = cv2.dnn.NMSBoxes(nms_in, all_scores, confidence, max(iou, 0.6))
             if len(indices) > 0:
                 for i in indices.flatten():
                     x, y, w, h = all_boxes[i]
-                    boxes.append([x, y, x+w, y+h])  # convert back to x1,y1,x2,y2
-                    scores.append(all_scores[i])
-                    class_ids.append(all_class_ids[i])
+                    nms_boxes.append([x, y, x+w, y+h])  # convert back to x1,y1,x2,y2
+                    nms_scores.append(all_scores[i])
+                    nms_class_ids.append(all_class_ids[i])
         del all_boxes, all_scores, all_class_ids
 
-        logger.info(f"Sliding window done: {len(boxes)} detections")
+        # Merge adjacent boxes to form continuous cracks
+        boxes, scores, class_ids = merge_boxes(nms_boxes, nms_scores, nms_class_ids, distance_threshold=150)
+
+        logger.info(f"Sliding window done: {len(boxes)} detections after merging")
 
     except Exception as e:
         logger.error(f"Inference error: {e}")
