@@ -1,32 +1,56 @@
-from fastapi import FastAPI, File, UploadFile, HTTPException, Form, Request
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
-import onnxruntime as ort
-import uvicorn
+"""
+YOLO Crack Detection API — v7
+==============================
+Pipeline مبني على حقائق الـ training notebook:
+
+  • الموديل اتدرب على SDNet2018 patches حجمها 256×256 px
+  • كل patch اتـletterbox لـ 640×640 قبل الـ inference
+  • best_conf = 0.50  (MCC-optimised على الـ val set)
+  • الـ ONNX output: [1, 5, 8400]  (cx, cy, w, h, conf_crack)
+  • val mAP50=0.947 | Precision=0.90 | Recall=0.832
+
+Flow:
+  1. صورة أصلية (أي حجم)
+  2. scale down لـ INFER_DIM بس لو أكبر منه  →  display_scale
+  3. tile بـ TILE_SIZE=256 مع OVERLAP=32
+  4. كل tile: letterbox 256→640 → inference → unletterbox
+  5. remap coordinates من tile space → processed image space
+  6. global NMS
+  7. remap مرة تانية من processed → original image space
+     (بالـ display_scale المحفوظ)
+"""
+
+# ── Standard library ──────────────────────────────────────────────────────────
+import gc
+import logging
+import os
+import time
+import threading
+from datetime import datetime, timezone
+from pathlib import Path
+
+# ── Third-party ───────────────────────────────────────────────────────────────
+import certifi
 import cv2
 import numpy as np
-import os
-import requests as req
-import gc
+import onnxruntime as ort
 import psutil
-import logging
-import time
-from pathlib import Path
-from datetime import datetime, timezone
+import requests as req
+import uvicorn
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pymongo import MongoClient
 from pymongo.errors import PyMongoError
-import certifi
 
-# =====================================
-# Logging
-# =====================================
+# ── Logging ───────────────────────────────────────────────────────────────────
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# =====================================
-# App
-# =====================================
-app = FastAPI(title="YOLO Crack Detection API", version="4.1")
+# ─────────────────────────────────────────────────────────────────────────────
+# App + CORS
+# ─────────────────────────────────────────────────────────────────────────────
+app = FastAPI(title="YOLO Crack Detection API", version="7.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -41,370 +65,375 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# =====================================
-# CORS على الـ error responses
-# =====================================
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     origin = request.headers.get("origin", "*")
-    # سجّل الـ error داخلياً بدون كشفه للمستخدم
-    logger.error(f"Unhandled error: {type(exc).__name__}: {exc}")
-    response = JSONResponse(
+    logger.error(f"Unhandled exception: {exc}", exc_info=True)
+    return JSONResponse(
         status_code=500,
-        content={"detail": "Internal server error. Please try again."}
+        content={"detail": "Internal server error"},
+        headers={"Access-Control-Allow-Origin": origin},
     )
-    response.headers["Access-Control-Allow-Origin"]      = origin
-    response.headers["Access-Control-Allow-Credentials"] = "true"
-    return response
 
-# =====================================
+# ─────────────────────────────────────────────────────────────────────────────
 # MongoDB
-# =====================================
-MONGO_URL = os.getenv("MONGO_URL")
-db_client        = None
-inspections_col  = None
+# ─────────────────────────────────────────────────────────────────────────────
+inspections_col = None
+_mongo_client   = None
 
-if MONGO_URL:
+MONGO_URI = os.environ.get("MONGO_URI", "")
+
+if MONGO_URI:
     try:
-        db_client = MongoClient(
-            MONGO_URL,
-            tls=True,
-            tlsCAFile=certifi.where(),
+        _mongo_client = MongoClient(
+            MONGO_URI,
+            maxPoolSize=1,
             serverSelectionTimeoutMS=5000,
             connectTimeoutMS=5000,
-            socketTimeoutMS=10000,
+            tlsCAFile=certifi.where(),
         )
-        db              = db_client["crackdetect"]
+        db = _mongo_client["crack_db"]
         inspections_col = db["inspections"]
-        # index على timestamp للـ queries السريعة
-        inspections_col.create_index([("timestamp", -1)])
-        logger.info("MongoDB connected successfully")
-    except PyMongoError as e:
-        logger.error(f"MongoDB connection failed: {e}")
-        db_client       = None
-        inspections_col = None
-
-# =====================================
-# Model Setup
-# =====================================
-MODEL_DIR  = Path("model")
-MODEL_NAME = "sdnet2018_crack_detect_yolov11m_best.onnx"
-MODEL_PATH = MODEL_DIR / MODEL_NAME
-MODEL_DIR.mkdir(exist_ok=True)
-
-MODEL_URL = os.getenv("MODEL_URL")
-
-if not MODEL_PATH.exists():
-    if not MODEL_URL:
-        raise RuntimeError("MODEL_URL is missing")
-    logger.info(f"Downloading model...")
-    try:
-        response = req.get(MODEL_URL, stream=True, timeout=120, allow_redirects=True)
-        if response.status_code != 200:
-            raise RuntimeError(f"Download failed — HTTP {response.status_code}")
-        with open(MODEL_PATH, "wb") as f:
-            for chunk in response.iter_content(chunk_size=8192):
-                f.write(chunk)
-        size_mb = MODEL_PATH.stat().st_size / 1024 / 1024
-        logger.info(f"Model downloaded — {size_mb:.1f} MB")
-        if size_mb < 1:
-            MODEL_PATH.unlink()
-            raise RuntimeError("Downloaded file too small")
+        inspections_col.create_index([("timestamp",  -1)])
+        inspections_col.create_index([("session_id",  1)])
+        logger.info("MongoDB connected")
     except Exception as e:
-        if MODEL_PATH.exists():
-            MODEL_PATH.unlink()
-        raise RuntimeError(str(e))
+        logger.warning(f"MongoDB unavailable: {e}")
+else:
+    logger.warning("MONGO_URI not set — running without DB")
 
-# =====================================
-# Load ONNX Session Once — Memory-optimized for Render 512 MB
-# =====================================
+# ─────────────────────────────────────────────────────────────────────────────
+# Model — loaded once at startup
+# ─────────────────────────────────────────────────────────────────────────────
+# تقليل RAM لـ threading libraries قبل تحميل الموديل
+os.environ.setdefault("OMP_NUM_THREADS",      "1")
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS",      "1")
+os.environ.setdefault("NUMEXPR_NUM_THREADS",  "1")
+
+MODEL_DIR  = Path("model")
+MODEL_URL  = os.environ.get("MODEL_URL", "")
+MODEL_PATH = MODEL_DIR / "best.onnx"
+
 session     = None
 input_name  = None
-model_imgsz = 640
+model_imgsz = 640   # ONNX fixed input size
 
-try:
-    opts = ort.SessionOptions()
-    opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-    opts.intra_op_num_threads = 1
-    opts.inter_op_num_threads = 1
+def _download_model() -> bool:
+    if MODEL_PATH.exists():
+        return True
+    if not MODEL_URL:
+        logger.error("MODEL_URL not set and model file missing")
+        return False
+    MODEL_DIR.mkdir(parents=True, exist_ok=True)
+    logger.info(f"Downloading model from {MODEL_URL} …")
+    try:
+        r = req.get(MODEL_URL, timeout=120, stream=True)
+        r.raise_for_status()
+        with open(MODEL_PATH, "wb") as f:
+            for chunk in r.iter_content(chunk_size=8192):
+                f.write(chunk)
+        logger.info(f"Model saved → {MODEL_PATH}")
+        return True
+    except Exception as e:
+        logger.error(f"Model download failed: {e}")
+        return False
 
-    # ── Memory optimizations for Render free-tier (512 MB RAM) ──
-    opts.enable_mem_pattern = True
-    opts.enable_mem_reuse   = True
-    opts.enable_cpu_mem_arena = False   # تقليل الـ RAM: بدل ما يحجز arena كبير
+if _download_model():
+    try:
+        opts = ort.SessionOptions()
+        opts.graph_optimization_level  = ort.GraphOptimizationLevel.ORT_ENABLE_BASIC
+        opts.intra_op_num_threads      = 1
+        opts.inter_op_num_threads      = 1
+        opts.enable_mem_pattern        = False
+        opts.enable_mem_reuse          = True
+        opts.enable_cpu_mem_arena      = False    # يوفر ~50-80 MB
+        opts.execution_mode            = ort.ExecutionMode.ORT_SEQUENTIAL
 
-    session = ort.InferenceSession(
-        str(MODEL_PATH),
-        sess_options=opts,
-        providers=["CPUExecutionProvider"],
-    )
-    input_name  = session.get_inputs()[0].name
-    model_imgsz = session.get_inputs()[0].shape[2]
-    logger.info(f"ONNX model loaded — input: {model_imgsz}x{model_imgsz}")
+        session    = ort.InferenceSession(
+            str(MODEL_PATH),
+            sess_options=opts,
+            providers=["CPUExecutionProvider"],
+        )
+        input_name  = session.get_inputs()[0].name
+        model_imgsz = session.get_inputs()[0].shape[2]   # 640
+        gc.collect()
 
-    # ── تنظيف بعد التحميل ──
-    gc.collect()
-    logger.info(f"Memory after model load: {round(psutil.Process(os.getpid()).memory_info().rss / 1024 / 1024, 1)} MB")
+        ram = round(psutil.Process(os.getpid()).memory_info().rss / 1024**2, 1)
+        logger.info(f"ONNX loaded — input {model_imgsz}×{model_imgsz} | RAM={ram} MB")
+    except Exception as e:
+        logger.error(f"ONNX load failed: {e}")
 
-except Exception as e:
-    logger.error(f"ONNX LOAD ERROR: {e}")
+# ─────────────────────────────────────────────────────────────────────────────
+# Constants  (derived from the training notebook)
+# ─────────────────────────────────────────────────────────────────────────────
+# SDNet2018 patches = 256×256 → الموديل اتدرب عليهم
+TILE_SIZE     = 256
 
-# =====================================
-# Config — ثابت بغض النظر عن الموديل
-# =====================================
-CLASS_NAMES = {0: "crack"}  # Model has 1 class only
+# overlap بين الـ tiles — يضمن إن الـ cracks على الحدود بتتشاف من الجانبين
+# مع INFER_DIM=640: stride=224 → ~4 tiles لصورة 640px → منطقي وسريع
+OVERLAP       = 32
+
+# resize الصورة الكبيرة قبل الـ tiling
+# 640px → tile واحد يغطي ~400px من الأصلي → box size منطقي على الصورة
+# RAM: max ~9 tiles → آمن جداً ضمن الـ 512MB
+INFER_DIM     = 640
+
+MAX_FILE_SIZE = 10 * 1024 * 1024   # 10 MB
+
+# best_conf من الـ MCC sweep في الـ notebook = 0.50
+# الـ frontend ممكن يبعت قيمة تانية — ده هو الـ default لو مبعتش
+DEFAULT_CONF  = 0.50
+
+# NMS IOU threshold
+DEFAULT_IOU   = 0.45
+
+CLASS_NAMES = {0: "crack"}
 
 SEVERITY_THRESHOLDS = {
-    "Critical": 0.9,
+    "Critical": 0.90,
     "High":     0.75,
-    "Moderate": 0.5,
+    "Moderate": 0.50,
 }
 
 ALLOWED_IMAGE_TYPES = {
     "image/jpeg", "image/jpg", "image/png",
-    "image/webp", "image/tiff",
+    "image/webp", "image/bmp", "image/tiff",
 }
 
-# Magic bytes للتحقق من نوع الملف الحقيقي
-MAGIC_BYTES: dict[bytes, str] = {
-    b'\xff\xd8\xff': "jpeg",
-    b'\x89PNG':      "png",
-    b'RIFF':         "webp",
-    b'II*\x00':      "tiff",
-    b'MM\x00*':      "tiff",
-}
+# Semaphore — يمنع أكتر من inference في نفس الوقت
+# (لو requestين جم مع بعض ممكن يعدوا الـ 512 MB)
+_inference_lock = threading.Semaphore(1)
 
-# Inference parameters
-CROP_SIZE     = 640   # crop window from the original image
-PATCH_SIZE    = 640   # model input size (must be 640x640)
-OVERLAP       = 128   # overlap between crops
-MAX_INPUT_DIM = 1280  # downscale massive images for real-time speed
-MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
+# Session state
+current_session_id: str | None = None
 
-# =====================================
+# ─────────────────────────────────────────────────────────────────────────────
 # Helpers
-# =====================================
+# ─────────────────────────────────────────────────────────────────────────────
 def memory_usage() -> float:
-    return round(
-        psutil.Process(os.getpid()).memory_info().rss / 1024 / 1024, 2
-    )
+    return round(psutil.Process(os.getpid()).memory_info().rss / 1024**2, 2)
 
 
-def get_severity(confidence: float) -> str:
-    if confidence >= SEVERITY_THRESHOLDS["Critical"]: return "Critical"
-    if confidence >= SEVERITY_THRESHOLDS["High"]:     return "High"
-    if confidence >= SEVERITY_THRESHOLDS["Moderate"]: return "Moderate"
+def get_severity(conf: float) -> str:
+    if conf >= SEVERITY_THRESHOLDS["Critical"]:
+        return "Critical"
+    if conf >= SEVERITY_THRESHOLDS["High"]:
+        return "High"
+    if conf >= SEVERITY_THRESHOLDS["Moderate"]:
+        return "Moderate"
     return "Low"
 
 
-def verify_image_magic(contents: bytes) -> bool:
-    """تحقق من الـ magic bytes الفعلية للملف"""
-    for magic, _ in MAGIC_BYTES.items():
-        if contents[:len(magic)] == magic:
-            return True
+def verify_image_magic(data: bytes) -> bool:
+    if data[:3] == b"\xff\xd8\xff":
+        return True   # JPEG
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
+        return True   # PNG
+    if data[:4] in (b"RIFF", b"WEBP"):
+        return True   # WebP
+    if data[:2] in (b"BM",):
+        return True   # BMP
     return False
 
 
-def preprocess_patch(patch_bgr: np.ndarray, imgsz: int):
-    orig_h, orig_w = patch_bgr.shape[:2]
-    scale  = imgsz / max(orig_h, orig_w)
-    new_w  = int(orig_w * scale)
-    new_h  = int(orig_h * scale)
+def letterbox(img_bgr: np.ndarray, target: int = 640):
+    """
+    Letterbox الصورة لـ target×target بدون تشويه.
+    يرجع: (tensor NCHW float32, letterbox_scale, pad_left, pad_top)
+    """
+    h, w = img_bgr.shape[:2]
+    scale = target / max(h, w)
+    new_w = int(w * scale)
+    new_h = int(h * scale)
 
-    resized = cv2.resize(patch_bgr, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+    resized = cv2.resize(img_bgr, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
 
-    pad_w  = (imgsz - new_w) / 2
-    pad_h  = (imgsz - new_h) / 2
-    top    = int(round(pad_h - 0.1))
-    bottom = int(round(pad_h + 0.1))
-    left   = int(round(pad_w - 0.1))
-    right  = int(round(pad_w + 0.1))
+    pad_left = (target - new_w) / 2
+    pad_top  = (target - new_h) / 2
+    top    = int(round(pad_top  - 0.1))
+    bottom = int(round(pad_top  + 0.1))
+    left   = int(round(pad_left - 0.1))
+    right  = int(round(pad_left + 0.1))
 
-    padded = cv2.copyMakeBorder(
+    canvas = cv2.copyMakeBorder(
         resized, top, bottom, left, right,
-        cv2.BORDER_CONSTANT, value=(114, 114, 114)
+        cv2.BORDER_CONSTANT, value=(114, 114, 114),
     )
-
-    img = cv2.cvtColor(padded, cv2.COLOR_BGR2RGB)
-    img = img.astype(np.float32) / 255.0
-    img = np.transpose(img, (2, 0, 1))
-    img = np.expand_dims(img, 0)
-
-    return img, scale, (pad_w, pad_h)
+    tensor = canvas[:, :, ::-1].transpose(2, 0, 1).astype(np.float32) / 255.0
+    tensor = tensor[np.newaxis]   # [1, 3, H, W]
+    return tensor, scale, pad_left, pad_top
 
 
-def postprocess_patch(
-    outputs, patch_h, patch_w,
-    conf_thresh, iou_thresh,
-    scale, pad_w, pad_h
-):
+def decode_tile(outputs, tile_h, tile_w, conf_thresh, lb_scale, pad_left, pad_top):
     """
-    Decode YOLOv11 ONNX output.
-    Output shape: [1, 5, 8400]  ->  5 = 4 box coords + 1 class score (crack)
+    Decode YOLO output لـ tile واحد.
+    يرجع الـ boxes بـ coordinates الـ tile (pixel space).
     """
-    raw = outputs[0][0]   # shape [5, 8400]
+    raw = outputs[0][0]               # [5, 8400] أو [8400, 5]
     if raw.shape[0] < raw.shape[1]:
-        raw = raw.T       # [8400, 5]
+        raw = raw.T                   # normalize → [8400, 5]
 
-    boxes_xywh, scores_list, class_ids_list = [], [], []
-
+    boxes, scores = [], []
     for pred in raw:
-        cx, cy, w, h = pred[:4]
-        confidence   = float(pred[4])   # single-class score
-        class_id     = 0                # only class: crack
-
-        if confidence < conf_thresh:
+        conf = float(pred[4])
+        if conf < conf_thresh:
             continue
 
-        cx_orig = (cx - pad_w) / scale
-        cy_orig = (cy - pad_h) / scale
-        w_orig  = w / scale
-        h_orig  = h / scale
+        cx, cy, bw, bh = pred[:4]
 
-        x1 = int(cx_orig - w_orig / 2)
-        y1 = int(cy_orig - h_orig / 2)
-        x2 = int(cx_orig + w_orig / 2)
-        y2 = int(cy_orig + h_orig / 2)
+        # ── unletterbox: من 640-space إلى tile-space ──
+        cx_t = (cx - pad_left) / lb_scale
+        cy_t = (cy - pad_top)  / lb_scale
+        bw_t = bw / lb_scale
+        bh_t = bh / lb_scale
 
-        x1 = max(0, min(patch_w, x1))
-        y1 = max(0, min(patch_h, y1))
-        x2 = max(0, min(patch_w, x2))
-        y2 = max(0, min(patch_h, y2))
+        x1 = int(cx_t - bw_t / 2)
+        y1 = int(cy_t - bh_t / 2)
+        x2 = int(cx_t + bw_t / 2)
+        y2 = int(cy_t + bh_t / 2)
+
+        # clamp داخل الـ tile
+        x1 = max(0, min(tile_w, x1))
+        y1 = max(0, min(tile_h, y1))
+        x2 = max(0, min(tile_w, x2))
+        y2 = max(0, min(tile_h, y2))
 
         if x2 <= x1 or y2 <= y1:
             continue
 
-        # Area filtering to remove false positives (huge background walls)
-        box_w = x2 - x1
-        box_h = y2 - y1
-        area  = box_w * box_h
-        patch_area = patch_h * patch_w
-        
-        # Ignore extremely small noise or boxes taking >25% of the patch
-        if area < 200 or area > (patch_area * 0.25):
+        # فلتر بسيط جداً — الـ YOLO confidence هو الفلتر الرئيسي
+        area      = (x2 - x1) * (y2 - y1)
+        tile_area = tile_h * tile_w
+        if area < 100:                      # ضوضاء — أقل من 10×10 px
+            continue
+        if area > tile_area * 0.92:         # يغطي معظم الـ tile → FP (background)
             continue
 
-        boxes_xywh.append([x1, y1, box_w, box_h])
-        scores_list.append(confidence)
-        class_ids_list.append(class_id)
+        boxes.append([x1, y1, x2, y2])
+        scores.append(round(conf, 4))
 
-    final_boxes, final_scores, final_class_ids = [], [], []
-    if boxes_xywh:
-        indices = cv2.dnn.NMSBoxes(boxes_xywh, scores_list, conf_thresh, iou_thresh)
-        if len(indices) > 0:
-            for i in indices.flatten():
-                x, y, bw, bh = boxes_xywh[i]
-                final_boxes.append([x, y, x + bw, y + bh])
-                final_scores.append(round(scores_list[i], 4))
-                final_class_ids.append(class_ids_list[i])
+    return boxes, scores
 
-    return final_boxes, final_scores, final_class_ids
-
-
-
-
-# =====================================
+# ─────────────────────────────────────────────────────────────────────────────
 # Routes
-# =====================================
+# ─────────────────────────────────────────────────────────────────────────────
 @app.get("/")
 def root():
     return {
         "status":       "running",
         "model_loaded": session is not None,
+        "tile_size":    TILE_SIZE,
+        "infer_dim":    INFER_DIM,
+        "default_conf": DEFAULT_CONF,
         "memory_mb":    memory_usage(),
     }
 
 
 @app.get("/debug")
 def debug():
-    vm = psutil.virtual_memory()
     return {
-        "memory_used_mb":   memory_usage(),
-        "available_ram_mb": round(vm.available / 1024 / 1024, 2),
-        "total_ram_mb":     round(vm.total     / 1024 / 1024, 2),
-        "cpu_percent":      psutil.cpu_percent(interval=0.5),
-        "model_loaded":     session is not None,
-        "model_input_size": model_imgsz,
-        "patch_size":       PATCH_SIZE,
-        "overlap":          OVERLAP,
-        "mongodb":          inspections_col is not None,
+        "model_loaded": session is not None,
+        "model_path":   str(MODEL_PATH),
+        "memory_mb":    memory_usage(),
+        "tile_size":    TILE_SIZE,
+        "overlap":      OVERLAP,
+        "infer_dim":    INFER_DIM,
     }
 
 
 @app.get("/history")
 def get_history(limit: int = 20):
     if inspections_col is None:
-        return {"inspections": [], "error": "MongoDB not connected"}
+        return {"inspections": [], "total": 0}
     try:
-        limit = max(1, min(limit, 100))  # بين 1 و100
-        docs  = list(
-            inspections_col
-            .find({}, {"_id": 0})
-            .sort("timestamp", -1)
-            .limit(limit)
+        docs = list(
+            inspections_col.find(
+                {}, {"_id": 0}
+            ).sort("timestamp", -1).limit(limit)
         )
-        return {"inspections": docs, "count": len(docs)}
+        for d in docs:
+            if isinstance(d.get("timestamp"), datetime):
+                d["timestamp"] = d["timestamp"].isoformat()
+        return {"inspections": docs, "total": inspections_col.count_documents({})}
     except PyMongoError as e:
-        logger.error(f"MongoDB query error: {e}")
-        return {"inspections": [], "error": "Database query failed"}
+        logger.error(f"History fetch error: {e}")
+        return {"inspections": [], "total": 0}
 
 
 @app.get("/stats")
 def get_stats():
-    """إحصائيات للـ Dashboard"""
     if inspections_col is None:
-        return {"error": "MongoDB not connected"}
+        return {"total_inspections": 0, "db_connected": False}
     try:
-        total        = inspections_col.count_documents({})
-        total_cracks = list(inspections_col.aggregate([
-            {"$group": {"_id": None, "total": {"$sum": "$count"}}}
-        ]))
-        severity_dist = list(inspections_col.aggregate([
-            {"$group": {"_id": "$max_severity", "count": {"$sum": 1}}}
-        ]))
+        total = inspections_col.count_documents({})
+        pipeline = [
+            {"$group": {
+                "_id":           None,
+                "avg_count":     {"$avg": "$count"},
+                "max_severity_counts": {"$push": "$max_severity"},
+            }}
+        ]
+        agg = list(inspections_col.aggregate(pipeline))
         return {
             "total_inspections": total,
-            "total_cracks":      total_cracks[0]["total"] if total_cracks else 0,
-            "severity_distribution": {
-                item["_id"]: item["count"]
-                for item in severity_dist
-                if item["_id"]
-            },
+            "db_connected":      True,
+            "avg_detections":    round(agg[0]["avg_count"], 2) if agg else 0,
         }
     except PyMongoError as e:
-        logger.error(f"MongoDB stats error: {e}")
-        return {"error": "Stats query failed"}
+        logger.error(f"Stats error: {e}")
+        return {"total_inspections": 0, "db_connected": False}
+
+
+@app.post("/inspection/new")
+def new_inspection():
+    """
+    يبدأ inspection جديد:
+    - يحذف كل الداتا القديمة من MongoDB
+    - يولد session_id جديد
+    """
+    import uuid
+    global current_session_id
+
+    new_sid = str(uuid.uuid4())
+
+    if inspections_col is not None:
+        try:
+            result = inspections_col.delete_many({})
+            logger.info(f"Cleared {result.deleted_count} old inspections")
+        except PyMongoError as e:
+            logger.error(f"MongoDB clear error: {e}")
+            raise HTTPException(status_code=500, detail="Failed to clear old data")
+
+    current_session_id = new_sid
+    logger.info(f"New inspection started: {new_sid}")
+    return {"session_id": new_sid, "message": "New inspection started. Old data cleared."}
 
 
 @app.post("/predict")
 async def predict(
     file:       UploadFile = File(...),
-    confidence: float      = Form(0.25, ge=0.0, le=1.0),
-    iou:        float      = Form(0.45, ge=0.0, le=1.0),
+    confidence: float      = Form(DEFAULT_CONF, ge=0.0, le=1.0),
+    iou:        float      = Form(DEFAULT_IOU,  ge=0.0, le=1.0),
 ):
     if session is None:
         raise HTTPException(status_code=503, detail="Model not loaded")
 
-    # ── تحقق من نوع الملف بالـ Content-Type ──
     if file.content_type not in ALLOWED_IMAGE_TYPES:
         raise HTTPException(
             status_code=400,
-            detail=f"Unsupported file type: {file.content_type}. Images only."
+            detail=f"Unsupported file type: {file.content_type}",
         )
 
-    # ── Read ──
     contents = await file.read()
-
     if len(contents) > MAX_FILE_SIZE:
-        raise HTTPException(status_code=413, detail="File too large (max 5 MB)")
-
-    # ── تحقق من الـ magic bytes الفعلية ──
+        raise HTTPException(status_code=413, detail="File too large (max 10 MB)")
     if not verify_image_magic(contents):
         raise HTTPException(status_code=400, detail="Invalid image file")
 
     nparr = np.frombuffer(contents, np.uint8)
     image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-    del contents, nparr  # ← تنظيف مبكر لتوفير RAM
+    del contents, nparr
     gc.collect()
 
     if image is None:
@@ -412,100 +441,152 @@ async def predict(
 
     original_h, original_w = image.shape[:2]
 
-    # ── Resize لو الصورة كبيرة جداً ──
+    # ── Step 1: scale down الصورة الكبيرة ──────────────────────────────────
+    # نحتفظ بـ display_scale عشان نـremap الـ boxes للصورة الأصلية بعدين
     display_scale = 1.0
-    if max(original_h, original_w) > MAX_INPUT_DIM:
-        display_scale = MAX_INPUT_DIM / max(original_h, original_w)
-        image = cv2.resize(
-            image, None,
-            fx=display_scale, fy=display_scale,
-            interpolation=cv2.INTER_AREA
-        )
+    if max(original_h, original_w) > INFER_DIM:
+        display_scale = INFER_DIM / max(original_h, original_w)
+        new_w = int(original_w * display_scale)
+        new_h = int(original_h * display_scale)
+        image = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_AREA)
+        logger.info(f"Resized {original_w}×{original_h} → {new_w}×{new_h} (scale={display_scale:.3f})")
 
-    start_time = time.time()
     proc_h, proc_w = image.shape[:2]
+    start_time = time.time()
+
+    # ── Semaphore ────────────────────────────────────────────────────────────
+    if not _inference_lock.acquire(blocking=False):
+        del image
+        gc.collect()
+        raise HTTPException(status_code=429, detail="Server busy. Try again in a moment.")
 
     try:
-        # ── Sliding Window inference ──
-        # Crop CROP_SIZE windows from original image (preserve crack detail),
-        # letterbox each crop to PATCH_SIZE (640) before inference.
-        stride = CROP_SIZE - OVERLAP
-        all_boxes, all_scores, all_class_ids = [], [], []
+        # ── Step 2: Tiling 256×256 ──────────────────────────────────────────
+        stride = TILE_SIZE - OVERLAP
+        all_boxes, all_scores = [], []
 
-        for y in range(0, proc_h, stride):
-            for x in range(0, proc_w, stride):
-                y2 = min(y + CROP_SIZE, proc_h)
-                x2 = min(x + CROP_SIZE, proc_w)
-                y1 = max(0, y2 - CROP_SIZE)
-                x1 = max(0, x2 - CROP_SIZE)
+        for ty in range(0, proc_h, stride):
+            for tx in range(0, proc_w, stride):
+                # حواف الـ tile (نأخذ من الأخر لو الصورة أصغر من TILE_SIZE)
+                ty2 = min(ty + TILE_SIZE, proc_h)
+                tx2 = min(tx + TILE_SIZE, proc_w)
+                ty1 = max(0, ty2 - TILE_SIZE)
+                tx1 = max(0, tx2 - TILE_SIZE)
 
-                patch = image[y1:y2, x1:x2]
-                # Letterbox crop → 640×640 for inference
-                tensor, scale, (pad_w, pad_h) = preprocess_patch(patch, PATCH_SIZE)
+                tile = image[ty1:ty2, tx1:tx2]
+                tile_h, tile_w = tile.shape[:2]
+
+                # ── Step 3: Letterbox tile → 640×640 ────────────────────────
+                tensor, lb_scale, pad_left, pad_top = letterbox(tile, model_imgsz)
+
+                # ── Step 4: Inference ────────────────────────────────────────
                 outputs = session.run(None, {input_name: tensor})
-                p_boxes, p_scores, p_class_ids = postprocess_patch(
-                    outputs, patch.shape[0], patch.shape[1],
-                    confidence, iou, scale, pad_w, pad_h
-                )
-                # Remap to full image coords
-                for box in p_boxes:
-                    box[0] += x1; box[1] += y1
-                    box[2] += x1; box[3] += y1
-                all_boxes.extend(p_boxes)
-                all_scores.extend(p_scores)
-                all_class_ids.extend(p_class_ids)
-                del tensor, outputs, patch
 
-        # Global NMS with higher IOU threshold to reduce overlapping boxes
-        boxes, scores, class_ids = [], [], []
+                # ── Step 5: Decode في tile-space ────────────────────────────
+                t_boxes, t_scores = decode_tile(
+                    outputs, tile_h, tile_w,
+                    confidence, lb_scale, pad_left, pad_top,
+                )
+
+                # ── Step 6: Remap من tile-space → processed image space ─────
+                for box in t_boxes:
+                    all_boxes.append([
+                        box[0] + tx1,
+                        box[1] + ty1,
+                        box[2] + tx1,
+                        box[3] + ty1,
+                    ])
+                all_scores.extend(t_scores)
+
+                del tensor, outputs, tile
+            gc.collect()   # بعد كل row من الـ tiles
+
+        # ── Step 7: Global NMS على الصورة الـ processed ─────────────────────
+        boxes_final, scores_final = [], []
         if all_boxes:
-            nms_in = [[b[0], b[1], b[2], b[3]] for b in all_boxes]
-            indices = cv2.dnn.NMSBoxes(nms_in, all_scores, confidence, max(iou, 0.6))
+            # IOU=0.20 صارم جداً — يدمج كل الـ boxes المتداخلة من tiles متجاورة
+            # الـ crack الواحدة ممكن تظهر في 2-4 tiles → لازم نضمها في box واحد
+            NMS_IOU = 0.20
+            nms_in = [
+                [b[0], b[1], b[2] - b[0], b[3] - b[1]]
+                for b in all_boxes
+            ]
+            indices = cv2.dnn.NMSBoxes(nms_in, all_scores, confidence, NMS_IOU)
             if len(indices) > 0:
                 for i in indices.flatten():
-                    x, y, w, h = all_boxes[i]
-                    boxes.append([x, y, x+w, y+h])  # convert back to x1,y1,x2,y2
-                    scores.append(all_scores[i])
-                    class_ids.append(all_class_ids[i])
-        del all_boxes, all_scores, all_class_ids
+                    boxes_final.append(all_boxes[i])
+                    scores_final.append(all_scores[i])
 
-        logger.info(f"Sliding window done: {len(boxes)} detections")
+        del all_boxes, all_scores
+        logger.info(f"Tiling done: {len(boxes_final)} detections after NMS")
 
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Inference error: {e}")
+        logger.error(f"Inference error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Inference failed. Please try again.")
     finally:
+        _inference_lock.release()
         del image
         gc.collect()
 
     processing_ms = round((time.time() - start_time) * 1000)
 
-    # ── Build detections ──
+    # ── Step 8: Remap من processed → original image space ───────────────────
+    # display_scale = processed / original
+    # لو display_scale=0.5 → الـ boxes بتيجي بنص الحجم → نضرب في (1/0.5)=2
+    inv_scale = 1.0 / display_scale
+    orig_boxes = []
+    orig_scores_filtered = []
+    for b, s in zip(boxes_final, scores_final):
+        x1 = int(b[0] * inv_scale)
+        y1 = int(b[1] * inv_scale)
+        x2 = int(b[2] * inv_scale)
+        y2 = int(b[3] * inv_scale)
+
+        # clamp داخل حدود الصورة الأصلية
+        x1 = max(0, min(original_w, x1))
+        y1 = max(0, min(original_h, y1))
+        x2 = max(0, min(original_w, x2))
+        y2 = max(0, min(original_h, y2))
+
+        # تجاهل الـ boxes اللي اتقلصت بعد الـ clamp
+        if x2 <= x1 or y2 <= y1:
+            continue
+
+        orig_boxes.append([x1, y1, x2, y2])
+        orig_scores_filtered.append(s)
+
+    scores_final = orig_scores_filtered
+
+    # ── Build detections ─────────────────────────────────────────────────────
     detections = [
         {
             "box":        box,
             "confidence": score,
-            "class_id":   cid,
-            "class_name": CLASS_NAMES.get(cid, "unknown"),
+            "class_id":   0,
+            "class_name": "crack",
             "severity":   get_severity(score),
         }
-        for box, score, cid in zip(boxes, scores, class_ids)
+        for box, score in zip(orig_boxes, scores_final)
     ]
+    logger.info(f"Final detections after remap+clamp: {len(detections)}")
 
-    # ── Max severity ──
     severity_order = ["Low", "Moderate", "High", "Critical"]
     max_severity   = "Low"
     for d in detections:
         if severity_order.index(d["severity"]) > severity_order.index(max_severity):
             max_severity = d["severity"]
 
-    # ── حفظ في MongoDB (non-blocking) ──
+    # ── Save to MongoDB ───────────────────────────────────────────────────────
     if inspections_col is not None:
         try:
             inspections_col.insert_one({
+                "session_id":           current_session_id,
                 "timestamp":            datetime.now(timezone.utc),
                 "filename":             file.filename or "unknown",
                 "image_size":           {"width": original_w, "height": original_h},
+                "display_scale":        display_scale,
                 "count":                len(detections),
                 "max_severity":         max_severity,
                 "confidence_threshold": confidence,
@@ -515,26 +596,22 @@ async def predict(
             })
         except PyMongoError as e:
             logger.error(f"MongoDB save error: {e}")
-            # مش بيوقف الـ response
 
-    # FIX: الـ frontend بيقرأ display_scale مش scale_factor
     return {
         "detections":    detections,
         "count":         len(detections),
         "max_severity":  max_severity,
         "image_size":    {"width": original_w, "height": original_h},
-        "display_scale": display_scale,
+        # display_scale=1.0 دايماً لأن الـ boxes اتـremap للصورة الأصلية هنا
+        # الـ frontend مش محتاج يعمل أي تعديل
+        "display_scale": 1.0,
+        "session_id":    current_session_id,
         "memory_mb":     memory_usage(),
     }
 
-# =====================================
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Run
-# =====================================
+# ─────────────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    uvicorn.run(
-        "main:app",
-        host="0.0.0.0",
-        port=8000,
-        reload=False,
-        workers=1,
-    )
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=False, workers=1)
